@@ -58,6 +58,10 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         for r in rows:
             new_r = {}
             for k, v in r.items():
+                # 处理 ISBN：去掉单引号以便程序内部匹配
+                if k == 'ISBN' and v and v.startswith("'"):
+                    v = v[1:]
+                
                 if k not in fixed_headers and ('-' in k or '/' in k):
                     try:
                         parts = k.replace('/', '-').split('-')
@@ -157,6 +161,11 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
 
         out_row = {h: row.get(h, '') for h in new_headers}
         out_row['历史最高价'] = f"{new_max:.2f}"
+        
+        # 保护 ISBN：写入 CSV 前加上单引号，防止 Excel 破坏
+        if out_row.get('ISBN') and not out_row['ISBN'].startswith("'"):
+            out_row['ISBN'] = f"'{out_row['ISBN']}"
+
         for d in tracked_dates:
             if out_row.get(d):
                 try: out_row[d] = f"{float(out_row[d]):.2f}"
@@ -183,6 +192,40 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
     inventory_rows = [r for r in rows if r.get('状态') == '持有']
     sold_rows = [r for r in rows if r.get('状态') == '已售']
 
+    # 1. 计算核心指标 (仅针对购入价不为空的书籍)
+    purchased_rows = [r for r in inventory_rows if r.get('购入价格') and float(r['购入价格']) > 0]
+    
+    total_investment = 0
+    total_valuation_purchased = 0
+    for r in purchased_rows:
+        try:
+            total_investment += float(r.get('购入价格') or 0)
+            # 这里的估值也只算这部分真正购入的书
+            total_valuation_purchased += float(r.get(latest_date) or 0) if latest_date else 0
+        except: pass
+    
+    floating_profit = total_valuation_purchased - total_investment
+    
+    total_realized_profit = 0
+    for r in sold_rows:
+        try:
+            total_realized_profit += (float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0))
+        except: pass
+
+    # 2. 准备盈亏趋势图数据 (仅针对有购入价的书)
+    trend_data = []
+    for d in date_headers:
+        day_profit = 0
+        for r in purchased_rows:
+            try:
+                price = float(r.get(d) or 0)
+                if price > 0: # 只有当天有价格才计算，避免缺失数据导致盈利暴跌
+                    day_profit += (price - float(r['购入价格']))
+            except: pass
+        # 日期缩短为 MM-DD
+        d_short = d[5:] if len(d) > 5 else d
+        trend_data.append({"date": d_short, "value": round(day_profit, 2)})
+
     # 建立快速查找映射
     lookup_map = {}
     for b in books_data.values():
@@ -203,65 +246,101 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
     <meta charset="UTF-8">
     <title>图书资产管理系统</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #f0f2f5; color: #333; }}
-        .section {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); overflow-x: auto; }}
-        h2 {{ color: #1a73e8; border-left: 5px solid #1a73e8; padding-left: 10px; margin-top: 0; }}
-        table {{ width: 100%; border-collapse: collapse; min-width: 1000px; }}
-        th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #eee; }}
-        th {{ background: #fafafa; font-size: 0.85rem; color: #666; font-weight: 600; }}
-        .title-col {{ text-align: left; max-width: 250px; font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-        .badge {{ font-size: 0.7rem; padding: 2px 5px; border-radius: 4px; margin-left: 5px; font-weight: bold; vertical-align: middle; display: inline-block; }}
-        .sb {{ background-color: #fff5f5; color: #e53e3e; border: 1px solid #feb2b2; }}
-        .up {{ background-color: #fff5f5; color: #e53e3e; }}
-        .dn {{ background-color: #f0fff4; color: #38a169; }}
-        .gray {{ color: #adb5bd !important; }}
-        .gray td {{ color: #adb5bd !important; opacity: 0.7; }}
-        .p-low {{ color: #38a169; font-weight: bold; }}
-        .p-max {{ color: #e53e3e; font-weight: bold; background: #fff5f5; padding: 2px 5px; border-radius: 4px; }}
-        .profit-p {{ color: #e53e3e; font-weight: bold; }}
-        .profit-n {{ color: #38a169; font-weight: bold; }}
-        .summary-box {{ display: flex; gap: 20px; margin-bottom: 20px; }}
-        .card {{ background: #fff; padding: 15px 25px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); min-width: 150px; }}
-        .card-val {{ font-size: 1.5rem; font-weight: bold; color: #1a73e8; margin-top: 5px; }}
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #f4f7f9; color: #334155; }}
+        .header-section {{ display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px; }}
+        h1 {{ margin: 0; font-size: 1.8rem; color: #1e293b; }}
+        
         .update-badge {{ 
-            display: inline-flex; 
-            align-items: center; 
-            background: #e8f0fe; 
-            color: #1967d2; 
-            padding: 4px 12px; 
-            border-radius: 50px; 
-            font-size: 0.8rem; 
-            font-weight: 500;
-            margin-bottom: 20px;
-            border: 1px solid #d2e3fc;
+            background: #fff; color: #64748b; padding: 6px 15px; border-radius: 50px; 
+            font-size: 0.8rem; border: 1px solid #e2e8f0; display: flex; align-items: center;
         }}
+
+        .summary-box {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px; }}
+        .card {{ background: #fff; padding: 18px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .card-label {{ font-size: 0.8rem; color: #64748b; margin-bottom: 8px; font-weight: 500; }}
+        .card-val {{ font-size: 1.4rem; font-weight: 800; color: #0f172a; }}
+        .val-p {{ color: #ef4444; }}
+        .val-n {{ color: #22c55e; }}
+
+        #chart-container {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 300px; }}
+
+        .section {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .section-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
+        h2 {{ font-size: 1.1rem; color: #1e293b; margin: 0; border-left: 4px solid #3b82f6; padding-left: 10px; }}
+        
+        .search-box {{ padding: 8px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 250px; outline: none; transition: all 0.2s; }}
+        .search-box:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
+
+        .table-wrapper {{ overflow-x: auto; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 1000px; }}
+        th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #f1f5f9; }}
+        th {{ background: #f8fafc; color: #64748b; font-weight: 600; cursor: pointer; position: relative; white-space: nowrap; }}
+        th:hover {{ background: #f1f5f9; }}
+        th.sortable::after {{ content: "↕"; color: #cbd5e1; margin-left: 5px; font-size: 0.7rem; }}
+        th.sort-asc::after {{ content: "↑"; color: #3b82f6; }}
+        th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
+        
+        .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
+        .sb {{ background: #fee2e2; color: #ef4444; }}
+        .up {{ background: #fee2e2; color: #ef4444; }}
+        .dn {{ background: #dcfce7; color: #22c55e; }}
+        
+        .gray td {{ color: #94a3b8 !important; opacity: 0.8; }}
+        .p-low {{ color: #22c55e; font-weight: 700; }}
+        .p-max {{ color: #ef4444; font-weight: 700; background: #fef2f2; padding: 2px 6px; border-radius: 4px; }}
+        .profit-p {{ color: #ef4444; font-weight: 700; }}
+        .profit-n {{ color: #22c55e; font-weight: 700; }}
     </style>
 </head>
 <body>
-    <div style="display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 5px;">
-        <h1 style="margin: 0;">📚 图书资产管理报表</h1>
+    <div class="header-section">
+        <h1>📚 图书资产管理报表</h1>
         <div class="update-badge">
-            <span style="margin-right: 5px;">🕒</span>
-            报表刷新于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            <span style="margin-right: 6px;">🕒</span>
+            刷新于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         </div>
     </div>
     
     <div class="summary-box">
-        <div class="card"><div>当前库存</div><div class="card-val">{len(inventory_rows)} 本</div></div>
-        <div class="card"><div>已售结项</div><div class="card-val">{len(sold_rows)} 本</div></div>
+        <div class="card"><div class="card-label">真正持仓 (有购入价)</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+        <div class="card"><div class="card-label">总投入成本</div><div class="card-val">¥{total_investment:.2f}</div></div>
+        <div class="card"><div class="card-label">购入书籍总估值</div><div class="card-val" style="color:#3b82f6">¥{total_valuation_purchased:.2f}</div></div>
+        <div class="card">
+            <div class="card-label">总浮动盈亏</div>
+            <div class="card-val {'val-p' if floating_profit>=0 else 'val-n'}">
+                {'+' if floating_profit>=0 else ''}{floating_profit:.2f}
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-label">已实现利润</div>
+            <div class="card-val {'val-p' if total_realized_profit>=0 else 'val-n'}">
+                {'+' if total_realized_profit>=0 else ''}{total_realized_profit:.2f}
+            </div>
+        </div>
     </div>
 
+    <div id="chart-container"></div>
+
     <div class="section">
-        <h2>📊 当前库存 (持有中)</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>ISBN</th><th class="title-col">书名</th><th>购入价</th><th>最高价</th>
-                    {"".join([f"<th>{d}</th>" for d in date_headers])}
-                    <th>估算盈亏</th><th>近7天趋势</th>
-                </tr>
-            </thead>
-            <tbody>"""
+        <div class="section-header">
+            <h2>📊 当前库存 (持有中)</h2>
+            <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
+        </div>
+        <div class="table-wrapper">
+            <table id="inventory-table">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable('inventory-table', 0)">ISBN</th>
+                        <th class="title-col" onclick="sortTable('inventory-table', 1)">书名</th>
+                        <th class="sortable" onclick="sortTable('inventory-table', 2, 'num')">购入价</th>
+                        <th class="sortable" onclick="sortTable('inventory-table', 3, 'num')">最高价</th>
+                        {"".join([f"<th class='sortable' onclick='sortTable(\"inventory-table\", {4+i}, \"num\")'>{d[5:] if len(d)>5 else d}</th>" for i, d in enumerate(date_headers)])}
+                        <th class="sortable" onclick="sortTable('inventory-table', {4+len(date_headers)}, 'num')">估算盈亏</th>
+                        <th class="sortable" onclick="sortTable('inventory-table', {5+len(date_headers)}, 'num')">7天趋势</th>
+                    </tr>
+                </thead>
+                <tbody>"""
     
     for r in inventory_rows:
         lp_str = r.get(latest_date, "0")
@@ -272,7 +351,9 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
         tr_cls = "class='gray'" if latest_p == 0 else ""
         
         badges = ""
-        current_book_info = lookup_map.get(r['ISBN']) or lookup_map.get(r['书名'])
+        # 匹配时去掉 ISBN 的单引号
+        raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+        current_book_info = lookup_map.get(raw_isbn) or lookup_map.get(r['书名'])
         
         if current_book_info:
             if current_book_info.get('subsidy', 0) > 0: 
@@ -285,7 +366,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
                 elif tp == 'increase_price': badges += f"<span class='badge up'>涨{format_num(abs(latest_p - prev_y))} ↑</span>"
                 elif tp == 'decrease_price': badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
 
-        html += f"<tr {tr_cls}><td style='font-family:monospace'>{r['ISBN']}</td><td class='title-col'>{r['书名']}{badges}</td>"
+        html += f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}{badges}</td>"
         html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='p-max'>¥{r['历史最高价']}</span></td>"
         
         ps = []
@@ -298,44 +379,113 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
                 try: ps.append(float(v))
                 except: pass
         
-        est = "-"
+        est_val = 0
+        est_html = "-"
         if r['购入价格'] and latest_p > 0:
             try:
-                diff = latest_p - float(r['购入价格'])
-                est = f"<span class='{'profit-p' if diff>=0 else 'profit-n'}'>{'+' if diff>=0 else ''}{diff:.2f}</span>"
+                est_val = latest_p - float(r['购入价格'])
+                est_html = f"<span class='{'profit-p' if est_val>=0 else 'profit-n'}'>{'+' if est_val>=0 else ''}{est_val:.2f}</span>"
             except: pass
-        html += f"<td>{est}</td>"
+        html += f"<td data-val='{est_val}'>{est_html}</td>"
 
-        trnd = "-"
+        trnd_val = 0
+        trnd_html = "-"
         if len(ps) >= 2:
-            d = ps[-1] - ps[0]
-            if d > 0: trnd = f"<span class='profit-p'>↑{d:.2f}</span>"
-            elif d < 0: trnd = f"<span class='profit-n'>↓{abs(d):.2f}</span>"
-            else: trnd = "-"
-        html += f"<td>{trnd}</td></tr>"
+            trnd_val = ps[-1] - ps[0]
+            if trnd_val > 0: trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
+            elif trnd_val < 0: trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
+            else: trnd_html = "-"
+        html += f"<td data-val='{trnd_val}'>{trnd_html}</td></tr>"
 
-    html += """</tbody></table></div>
+    html += """</tbody></table></div></div>
     <div class="section">
-        <h2>✅ 已售结项</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
-                </tr>
-            </thead>
-            <tbody>"""
+        <div class="section-header"><h2>✅ 已售结项</h2></div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
+                    </tr>
+                </thead>
+                <tbody>"""
     
     for r in sold_rows:
+        raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
         profit = "-"
         if r['购入价格'] and r['售出价格']:
             try:
                 p = float(r['售出价格']) - float(r['购入价格'])
                 profit = f"<span class='{'profit-p' if p>=0 else 'profit-n'}'>{'+' if p>=0 else ''}{p:.2f}</span>"
             except: pass
-        html += f"<tr><td style='font-family:monospace'>{r['ISBN']}</td><td class='title-col'>{r['书名']}</td>"
+        html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
         html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{profit}</td></tr>"
 
-    html += f"""</tbody></table></div>
+    html += f"""</tbody></table></div></div>
+    
+    <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script>
+        // 1. 初始化趋势图
+        const trendData = {json.dumps(trend_data)};
+        const chart = echarts.init(document.getElementById('chart-container'));
+        chart.setOption({{
+            title: {{ text: '总浮动盈亏走势', left: 'center', textStyle: {{ fontSize: 14, color: '#64748b' }} }},
+            tooltip: {{ trigger: 'axis', formatter: '{{b}}: ¥{{c}}' }},
+            grid: {{ left: '3%', right: '4%', bottom: '3%', containLabel: true }},
+            xAxis: {{ type: 'category', data: trendData.map(d => d.date), axisLine: {{ lineStyle: {{ color: '#cbd5e1' }} }} }},
+            yAxis: {{ type: 'value', axisLabel: {{ formatter: '¥{{value}}' }}, splitLine: {{ lineStyle: {{ type: 'dashed' }} }} }},
+            series: [{{
+                data: trendData.map(d => d.value),
+                type: 'line', smooth: true, symbol: 'circle', symbolSize: 8,
+                itemStyle: {{ color: '#ef4444' }},
+                areaStyle: {{ color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                    {{ offset: 0, color: 'rgba(239,68,68,0.2)' }},
+                    {{ offset: 1, color: 'rgba(239,68,68,0)' }}
+                ]) }}
+            }}]
+        }});
+
+        // 2. 搜索过滤
+        function filterTable() {{
+            const query = document.getElementById('search').value.toLowerCase();
+            const rows = document.querySelectorAll('#inventory-table tbody tr');
+            rows.forEach(row => {{
+                row.style.display = row.innerText.toLowerCase().includes(query) ? '' : 'none';
+            }});
+        }}
+
+        // 3. 排序逻辑
+        let sortOrder = {{}};
+        function sortTable(tableId, colIdx, type) {{
+            const table = document.getElementById(tableId);
+            const ths = table.querySelectorAll('th');
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            const direction = sortOrder[colIdx] === 'asc' ? -1 : 1;
+            sortOrder[colIdx] = direction === 1 ? 'asc' : 'desc';
+
+            // 清除所有表头的排序 class
+            ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+            // 为当前点击的表头添加 class
+            ths[colIdx].classList.add(direction === 1 ? 'sort-asc' : 'sort-desc');
+
+            rows.sort((a, b) => {{
+                let v1 = a.cells[colIdx].getAttribute('data-val') || a.cells[colIdx].innerText.replace('¥', '').replace('+', '').replace('↑', '').replace('↓', '').trim();
+                let v2 = b.cells[colIdx].getAttribute('data-val') || b.cells[colIdx].innerText.replace('¥', '').replace('+', '').replace('↑', '').replace('↓', '').trim();
+                
+                if (type === 'num') {{
+                    v1 = parseFloat(v1) || 0;
+                    v2 = parseFloat(v2) || 0;
+                    return (v1 - v2) * direction;
+                }}
+                return v1.localeCompare(v2) * direction;
+            }});
+
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+
+        window.onresize = () => chart.resize();
+    </script>
 </body>
 </html>"""
     with open('report.html', 'w', encoding='utf-8') as f: f.write(html)

@@ -51,37 +51,46 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             reader.fieldnames = [name.strip() for name in reader.fieldnames] if reader.fieldnames else []
             rows = list(reader)
 
-    # 3. 确定日期列并归一化 (YYYY-MM-DD)
+    # 3. 确定日期列、自定义列并归一化
     existing_dates = []
+    custom_headers = []
     if rows:
+        # 首先找出所有的日期列和自定义列
+        all_keys = set()
+        for r in rows: all_keys.update(r.keys())
+        
+        # 区分日期列和自定义列
+        for k in all_keys:
+            if k in fixed_headers: continue
+            # 简单的日期判断逻辑：包含短横线或斜杠且长度在 8-10 之间
+            if ('-' in k or '/' in k) and 8 <= len(k) <= 10:
+                existing_dates.append(k)
+            else:
+                custom_headers.append(k)
+        
+        # 日期归一化处理
         cleaned_rows = []
         for r in rows:
             new_r = {}
             for k, v in r.items():
-                # 处理 ISBN：去掉单引号以便程序内部匹配
                 if k == 'ISBN' and v and v.startswith("'"):
                     v = v[1:]
                 
-                if k not in fixed_headers and ('-' in k or '/' in k):
+                if k in existing_dates:
                     try:
                         parts = k.replace('/', '-').split('-')
-                        if len(parts) == 3:
-                            new_k = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
-                        else: new_k = k
+                        new_k = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
                     except: new_k = k
                 else: new_k = k
-                
-                if new_k in new_r and not new_r[new_k] and v:
-                    new_r[new_k] = v
-                elif new_k not in new_r:
-                    new_r[new_k] = v
+                new_r[new_k] = v
             cleaned_rows.append(new_r)
         rows = cleaned_rows
         
-        all_keys = []
-        for r in rows: all_keys.extend(r.keys())
-        existing_dates = sorted(list(set([h for h in all_keys if h not in fixed_headers])))
-    
+        # 重新整理归一化后的日期
+        all_keys_new = set()
+        for r in rows: all_keys_new.update(r.keys())
+        existing_dates = sorted([k for k in all_keys_new if k not in fixed_headers and k not in custom_headers])
+
     try:
         parts = capture_date.split('-')
         capture_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
@@ -92,7 +101,8 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
     
     existing_dates.sort()
     tracked_dates = existing_dates[-7:] if len(existing_dates) > 7 else existing_dates
-    new_headers = fixed_headers + tracked_dates
+    # 新表头结构：固定列 + 自定义列 + 追踪日期列
+    new_headers = fixed_headers + sorted(custom_headers) + tracked_dates
 
     # 4. 匹配并更新
     isbn_map = {r['ISBN'].strip(): r for r in rows if r.get('ISBN') and r.get('ISBN').strip()}
@@ -111,16 +121,15 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         if matched_row:
             if isbn: matched_row['ISBN'] = isbn
             matched_row['书名'] = title
-            # 如果是“已移除”状态，但今天又出现在抓包里，则恢复为“持有”
+            # 如果是“已移除”状态，但今天又出现在抓包里，则恢复为“持有”或“未持有”
             if matched_row.get('状态') == '已移除':
-                matched_row['状态'] = '持有'
-            # 只有持有中的书才更新当日行情
-            if matched_row.get('状态') == '持有':
-                matched_row[capture_date] = price
+                matched_row['状态'] = '未持有'
+            # 更新当日行情
+            matched_row[capture_date] = price
         else:
             new_row = {h: '' for h in new_headers}
             new_row.update({
-                'ISBN': isbn, '书名': title, '状态': '持有', 
+                'ISBN': isbn, '书名': title, '状态': '未持有', 
                 '购入价格': '', '售出价格': '', '历史最高价': '0.00',
                 capture_date: price
             })
@@ -141,12 +150,18 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
                 row['状态'] = '已售'
         except: pass
 
+        # 核心逻辑：区分“持有”与“未持有”
+        if row['状态'] not in ['已售', '已移除']:
+            # 只要购入价格列不为空（即使是0），就视为持有；只有留空才视为未持有
+            bp_raw = row.get('购入价格', '').strip()
+            row['状态'] = '持有' if bp_raw != '' else '未持有'
+
         # 规则 B：识别“已移除” (不在今日抓包里 且 没有购入价 且 没有售出价)
         if key not in hit_keys:
             try:
-                bp = float(row.get('购入价格') or 0)
-                sp = float(row.get('售出价格') or 0)
-                if bp == 0 and sp == 0 and row.get('状态') == '持有':
+                bp_raw = row.get('购入价格', '').strip()
+                sp_raw = row.get('售出价格', '').strip()
+                if bp_raw == '' and sp_raw == '' and row.get('状态') in ['持有', '未持有']:
                     row['状态'] = '已移除'
             except: pass
 
@@ -185,22 +200,27 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
 # ==========================================
 
 def generate_report(headers, rows, books_data, ordered_ids=None):
-    date_headers = [h for h in headers if h not in ['ISBN', '书名', '状态', '购入价格', '售出价格', '历史最高价']]
+    fixed_fields = ['ISBN', '书名', '状态', '购入价格', '售出价格', '历史最高价']
+    # 更加严谨地识别日期列
+    date_headers = [h for h in headers if ('-' in h or '/' in h) and 8 <= len(h) <= 10]
+    # 识别自定义列
+    custom_headers = [h for h in headers if h not in fixed_fields and h not in date_headers]
+    
     latest_date = date_headers[-1] if date_headers else None
     
-    # 过滤掉“已移除”的书籍，不显示在报表中
-    inventory_rows = [r for r in rows if r.get('状态') == '持有']
+    # 过滤掉“已移除”的书籍，包含持有和未持有的
+    inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
     sold_rows = [r for r in rows if r.get('状态') == '已售']
 
-    # 1. 计算核心指标 (仅针对购入价不为空的书籍)
-    purchased_rows = [r for r in inventory_rows if r.get('购入价格') and float(r['购入价格']) > 0]
+    # 1. 计算核心指标 (针对所有状态为“持有”的书籍)
+    purchased_rows = [r for r in inventory_rows if r.get('状态') == '持有']
     
     total_investment = 0
     total_valuation_purchased = 0
     for r in purchased_rows:
         try:
             total_investment += float(r.get('购入价格') or 0)
-            # 这里的估值也只算这部分真正购入的书
+            # 即使购入价为 0，只要持有，其当前估值也计入总资产
             total_valuation_purchased += float(r.get(latest_date) or 0) if latest_date else 0
         except: pass
     
@@ -212,7 +232,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
             total_realized_profit += (float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0))
         except: pass
 
-    # 2. 准备盈亏趋势图数据 (仅针对有购入价的书)
+    # 2. 准备盈亏趋势图数据 (仅针对持有书籍)
     trend_data = []
     for d in date_headers:
         day_profit = 0
@@ -220,7 +240,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
             try:
                 price = float(r.get(d) or 0)
                 if price > 0: # 只有当天有价格才计算，避免缺失数据导致盈利暴跌
-                    day_profit += (price - float(r['购入价格']))
+                    day_profit += (price - float(r.get('购入价格') or 0))
             except: pass
         # 日期缩短为 MM-DD
         d_short = d[5:] if len(d) > 5 else d
@@ -338,6 +358,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
                         {"".join([f"<th class='sortable' onclick='sortTable(\"inventory-table\", {4+i}, \"num\")'>{d[5:] if len(d)>5 else d}</th>" for i, d in enumerate(date_headers)])}
                         <th class="sortable" onclick="sortTable('inventory-table', {4+len(date_headers)}, 'num')">估算盈亏</th>
                         <th class="sortable" onclick="sortTable('inventory-table', {5+len(date_headers)}, 'num')">7天趋势</th>
+                        {"".join([f"<th class='sortable' onclick='sortTable(\"inventory-table\", {6+len(date_headers)+i})'>{ch}</th>" for i, ch in enumerate(custom_headers)])}
                     </tr>
                 </thead>
                 <tbody>"""
@@ -351,6 +372,10 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
         tr_cls = "class='gray'" if latest_p == 0 else ""
         
         badges = ""
+        # 如果是未持有状态，增加一个“观察”标签
+        if r.get('状态') == '未持有':
+            badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
+
         # 匹配时去掉 ISBN 的单引号
         raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
         current_book_info = lookup_map.get(raw_isbn) or lookup_map.get(r['书名'])
@@ -395,7 +420,13 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
             if trnd_val > 0: trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
             elif trnd_val < 0: trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
             else: trnd_html = "-"
-        html += f"<td data-val='{trnd_val}'>{trnd_html}</td></tr>"
+        html += f"<td data-val='{trnd_val}'>{trnd_html}</td>"
+        
+        # 填充自定义列数据
+        for ch in custom_headers:
+            html += f"<td>{r.get(ch, '-')}</td>"
+        
+        html += "</tr>"
 
     html += """</tbody></table></div></div>
     <div class="section">
@@ -405,6 +436,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
                 <thead>
                     <tr>
                         <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
+                        {"".join([f"<th>{ch}</th>" for ch in custom_headers])}
                     </tr>
                 </thead>
                 <tbody>"""
@@ -418,7 +450,11 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
                 profit = f"<span class='{'profit-p' if p>=0 else 'profit-n'}'>{'+' if p>=0 else ''}{p:.2f}</span>"
             except: pass
         html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
-        html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{profit}</td></tr>"
+        html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{profit}</td>"
+        # 已售书籍也显示自定义列
+        for ch in custom_headers:
+            html += f"<td>{r.get(ch, '-')}</td>"
+        html += "</tr>"
 
     html += f"""</tbody></table></div></div>
     

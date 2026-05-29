@@ -428,7 +428,7 @@ def generate_report(headers, rows, books_data, ordered_ids=None):
         
         html += "</tr>"
 
-    html += """</tbody></table></div></div>
+    html += f"""</tbody></table></div></div>
     <div class="section">
         <div class="section-header"><h2>✅ 已售结项</h2></div>
         <div class="table-wrapper">

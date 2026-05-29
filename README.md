@@ -28,7 +28,18 @@
 
 ## 快速操作指南
 
-### 1. 行情同步 (每日操作)
+### 方式 A：一键全自动同步 (推荐)
+1.  **准备环境**：首次使用需安装依赖：
+    ```bash
+    pip install playwright --break-system-packages
+    playwright install chromium
+    ```
+2.  **执行同步**：运行 `python3 auto_fetch.py`。
+    *   脚本会自动打开浏览器并导航至多抓鱼（首次运行需扫码登录，之后自动保持）。
+    *   自动截获数据并同步至 `inventory_auto.csv`。
+    *   完成后**自动弹出** `report_auto.html` 查看报表。
+
+### 方式 B：手动同步 (备选)
 1.  **多抓鱼取数**：在 Chrome 开发者工具 `Network` 中，右键点击 `inquiry-books` -> `Copy` -> `Copy response`。
 2.  **执行同步**：运行 `python3 sync_data.py`。
 3.  **查看报表**：双击打开 `report.html`。

@@ -1,2 +1,6 @@
 __pycache__/
 .DS_Store
+chrome_data/
+latest_data.json
+*.csv.tmp
+backups/*.csv

@@ -417,6 +417,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .p-max {{ color: #ef4444; font-weight: 700; background: #fef2f2; padding: 2px 6px; border-radius: 4px; }}
         .profit-p {{ color: #ef4444; font-weight: 700; }}
         .profit-n {{ color: #22c55e; font-weight: 700; }}
+        tr.at-peak td {{ background: #fffbeb !important; }}
+        .badge-peak {{ background: #f59e0b; color: #fff; }}
+        .p-peak {{ color: #b45309; font-weight: 800; background: #fef3c7; padding: 2px 6px; border-radius: 4px; }}
     </style>
 </head>
 <body>
@@ -477,9 +480,18 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             latest_p = 0
 
         max_p = float(r['历史最高价'] or 0)
-        tr_cls = "class='gray'" if latest_p == 0 else ""
+        # 当天价格达到历史最高价（且 > 0）时，标记为可考虑卖出
+        at_peak = latest_p > 0 and abs(latest_p - max_p) < 0.01
+        if latest_p == 0:
+            tr_cls = "class='gray'"
+        elif at_peak:
+            tr_cls = "class='at-peak'"
+        else:
+            tr_cls = ""
 
         badges = ""
+        if at_peak:
+            badges += "<span class='badge badge-peak'>\U0001f525 可出(最高价)</span>"
         if r.get('状态') == '未持有':
             badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
 
@@ -501,7 +513,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
 
         html += f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}{badges}</td>"
-        html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='p-max'>¥{r['历史最高价']}</span></td>"
+        max_cls = 'p-peak' if at_peak else 'p-max'
+        html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
 
         ps = []
         for i, d in enumerate(date_headers):

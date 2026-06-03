@@ -491,7 +491,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
         badges = ""
         if at_peak:
-            badges += "<span class='badge badge-peak'>\U0001f525 可出(最高价)</span>"
+            badges += "<span class='badge badge-peak'>\U0001f525</span>"
         if r.get('状态') == '未持有':
             badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
 

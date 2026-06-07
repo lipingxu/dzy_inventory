@@ -175,14 +175,20 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         title = info['title'].strip()
         price = info['price']
 
-        matched_row = isbn_map.get(isbn) or title_map.get(title)
+        # 严格优先 ISBN 匹配；只有当本书没有 ISBN 时才回退按书名匹配，
+        # 避免同名不同版本（如两本《三国演义》）被错误合并到同一行。
+        if isbn:
+            matched_row = isbn_map.get(isbn)
+        else:
+            matched_row = title_map.get(title)
         key = (isbn or title).strip()
         hit_keys.add(key)
 
         if matched_row:
             if isbn:
                 matched_row['ISBN'] = isbn
-            matched_row['书名'] = title
+            if not (matched_row.get('书名') or '').strip():
+                matched_row['书名'] = title
             if matched_row.get('状态') == '已移除':
                 matched_row['状态'] = '未持有'
             matched_row[capture_date] = price
@@ -670,8 +676,11 @@ def process_raw_data(data):
         book_info = item.get('book', {})
         if book_id and book_info.get('title'):
             ordered_ids.append(book_id)
+            title = book_info.get('title')
+            subtitle = (book_info.get('subtitle') or '').strip()
+            display_title = f"{title}（{subtitle}）" if subtitle else title
             books_data[book_id] = {
-                'title': book_info.get('title'),
+                'title': display_title,
                 'isbn': book_info.get('isbn13', ''),
                 'price': item.get('acquirePrice', 0) / 100.0,
                 'subsidy': item.get('popularBookSubsidy', 0) / 100.0,

@@ -324,8 +324,10 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     total_valuation_purchased = 0
     for r in purchased_rows:
         try:
-            total_investment += float(r.get('购入价格') or 0)
-            total_valuation_purchased += float(r.get(latest_date) or 0) if latest_date else 0
+            cost = float(r.get('购入价格') or 0)
+            latest_price = float(r.get(latest_date) or 0) if latest_date else 0
+            total_investment += cost
+            total_valuation_purchased += latest_price
         except (ValueError, TypeError):
             pass
 
@@ -344,9 +346,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         day_profit = 0
         for r in purchased_rows:
             try:
+                cost = float(r.get('购入价格') or 0)
                 price = float(r.get(d) or 0)
-                if price > 0:
-                    day_profit += price - float(r.get('购入价格') or 0)
+                day_profit += price - cost
             except (ValueError, TypeError):
                 pass
         d_short = d[5:] if len(d) > 5 else d

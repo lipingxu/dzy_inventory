@@ -312,6 +312,14 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     date_headers = [h for h in headers if _is_date_column(h)]
     custom_headers = [h for h in headers if h not in fixed_fields and h not in date_headers]
 
+    last_checked_text = ""
+    try:
+        if os.path.exists('last_checked.txt'):
+            with open('last_checked.txt', 'r', encoding='utf-8') as _f:
+                last_checked_text = _f.read().strip()
+    except Exception as e:
+        logger.warning("读取 last_checked.txt 失败: %s", e)
+
     latest_date = date_headers[-1] if date_headers else None
 
     inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
@@ -436,6 +444,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         <div class="update-badge">
             <span style="margin-right: 6px;">🕒</span>
             刷新于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            {f'<span style="margin-left:10px; color:#94a3b8;">| 最后检查: {last_checked_text}</span>' if last_checked_text else ''}
         </div>
     </div>
     

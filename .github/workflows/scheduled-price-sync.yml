@@ -40,13 +40,19 @@ jobs:
         env:
           DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
 
+      - name: Record last checked timestamp
+        if: always()
+        run: |
+          date '+%Y-%m-%d %H:%M:%S %Z' > last_checked.txt
+
       - name: Commit and push updates
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add inventory_auto.csv report_auto.html
+          git add last_checked.txt inventory_auto.csv report_auto.html 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "No data changes to commit."
+            echo "Nothing to commit."
             exit 0
           fi
           git commit -m "chore: scheduled price sync"

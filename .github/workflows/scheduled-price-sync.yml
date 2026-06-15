@@ -1,0 +1,53 @@
+name: Scheduled Price Sync
+
+on:
+  schedule:
+    # UTC time: 01:30 / 06:30 / 12:30 = Beijing time 09:30 / 14:30 / 20:30
+    - cron: "30 1,6,12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Shanghai
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Validate secret
+        run: |
+          if [ -z "${DZY_CURL_COMMAND}" ]; then
+            echo "Missing secret: DZY_CURL_COMMAND"
+            exit 1
+          fi
+        env:
+          DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
+
+      - name: Run sync
+        run: |
+          printf '%s' "${DZY_CURL_COMMAND}" > duozhuayu_source.txt
+          python3 auto_sync_data.py duozhuayu_source.txt
+          rm -f duozhuayu_source.txt
+        env:
+          DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
+
+      - name: Commit and push updates
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add inventory_auto.csv report_auto.html
+          if git diff --cached --quiet; then
+            echo "No data changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: scheduled price sync"
+          git push

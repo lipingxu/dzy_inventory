@@ -32,6 +32,10 @@ jobs:
         env:
           DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
 
+      - name: Record last checked timestamp
+        run: |
+          date '+%Y-%m-%d %H:%M:%S %Z' > last_checked.txt
+
       - name: Run sync
         run: |
           printf '%s' "${DZY_CURL_COMMAND}" > duozhuayu_source.txt
@@ -39,11 +43,6 @@ jobs:
           rm -f duozhuayu_source.txt
         env:
           DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
-
-      - name: Record last checked timestamp
-        if: always()
-        run: |
-          date '+%Y-%m-%d %H:%M:%S %Z' > last_checked.txt
 
       - name: Commit and push updates
         if: always()

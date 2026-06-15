@@ -63,8 +63,8 @@
 
 ### 方式 B：手动同步 (备选)
 1.  **多抓鱼取数**：在 Chrome 开发者工具 `Network` 中，右键点击 `inquiry-books` -> `Copy` -> `Copy response`。
-2.  **执行同步**：运行 `python3 sync_data.py`。
-3.  **查看报表**：双击打开 `report.html`。
+2.  **执行同步**：将复制内容保存到本地文件后运行 `python3 auto_sync_data.py <你的数据文件>`。
+3.  **查看报表**：双击打开 `report_auto.html`。
 
 ### 2. 资产维护
 *   **录入成本**：在 `inventory.csv` 的 `购入价格` 列填入数字。
@@ -74,15 +74,27 @@
 ## 项目结构
 ```
 inventory_core.py    # 共享核心模块（CSV 同步 / 报表生成 / API 解析）
-sync_data.py         # 入口 A：手动模式 (读剪贴板, 写 inventory.csv)
 auto_sync_data.py    # 入口 B：自动化模式 (读文件参数, 写 inventory_auto.csv)
 auto_fetch.py        # Playwright 自动抓取，调用 auto_sync_data.py
+.github/workflows/   # GitHub Actions 定时同步任务
 backups/             # 每次同步前的 CSV 自动备份（git 忽略）
 ```
+
+## 云端定时同步（GitHub Actions）
+1. 在仓库 `Settings -> Secrets and variables -> Actions` 新增密钥：`DZY_CURL_COMMAND`。
+   * 值为你在浏览器里可用的 `curl ...inquiry-books...` 命令（建议先在本地验证可用）。
+2. 提交本仓库后，进入 `Actions` 页面启用工作流 `Scheduled Price Sync`。
+3. 定时任务默认每天北京时间 **09:30 / 14:30 / 20:30** 执行，也可手动点 `Run workflow` 立即执行。
+4. 每次成功执行后会自动更新并提交：
+   * `inventory_auto.csv`
+   * `report_auto.html`
+
+### 手机查看方式
+开启 GitHub Pages（`Settings -> Pages`，选择 `Deploy from a branch`，`main` + `/root`）后，可通过：
+`https://<你的GitHub用户名>.github.io/<仓库名>/report_auto.html` 随时查看最新报表。
 
 ## 报表视觉逻辑
 *   **红色/↑**：价格上涨、浮盈。
 *   **绿色/↓**：价格下跌、浮亏。
 *   **灰色行**：多抓鱼当前暂不回收的书籍。
 *   **观察徽章**：尚未买入、仅作行情监控的书籍。
-

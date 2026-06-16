@@ -2,8 +2,12 @@ name: Scheduled Price Sync
 
 on:
   schedule:
-    # UTC time: 01:30 / 06:30 / 12:30 = Beijing time 09:30 / 14:30 / 20:30
-    - cron: "30 1,6,12 * * *"
+    # Beijing time 07:07 / 11:23 / 14:47 / 17:17
+    # UTC:        23:07 / 03:23 / 06:47 / 09:17
+    - cron: "7 23 * * *"
+    - cron: "23 3 * * *"
+    - cron: "47 6 * * *"
+    - cron: "17 9 * * *"
   workflow_dispatch:
 
 permissions:

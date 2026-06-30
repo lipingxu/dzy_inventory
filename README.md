@@ -94,6 +94,7 @@ ISBN,书名,购入价格,售出价格,备注
 - `书名` 主要用于你在 GitHub 上快速识别目标行
 - `购入价格` / `售出价格` / `备注` 填了才生效，留空表示不覆盖
 - 不创建这个文件时，现有自动化流程完全不受影响
+- 这个文件已使用 UTF-8 with BOM，直接双击用 Excel 打开通常不会乱码；如果仍乱码，可用 Excel 的“数据 -> 自文本/CSV”导入并手动选择 UTF-8
 
 ## 云端定时同步（GitHub Actions）
 1. 在仓库 `Settings -> Secrets and variables -> Actions` 新增密钥：`DZY_CURL_COMMAND`。

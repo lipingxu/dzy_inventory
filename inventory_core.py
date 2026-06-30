@@ -87,6 +87,72 @@ def _write_csv_atomic(csv_path, headers, rows):
     os.replace(tmp_path, csv_path)
 
 
+def load_manual_overrides(overrides_path='manual_overrides.csv'):
+    """读取手工覆盖文件，返回表头和数据行。"""
+    manual_headers = []
+    manual_rows = []
+    if not os.path.exists(overrides_path):
+        return manual_headers, manual_rows
+    try:
+        with open(overrides_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames:
+                manual_headers = [name.strip() for name in reader.fieldnames]
+            manual_rows = list(reader)
+    except Exception as e:
+        logger.warning("读取手工覆盖文件失败: %s", e)
+    return manual_headers, manual_rows
+
+
+def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
+    """将手工覆盖文件合并到自动生成的行中。"""
+    if not manual_rows:
+        return headers, rows
+
+    extra_headers = []
+    for manual_row in manual_rows:
+        for key in manual_headers:
+            if key == 'ISBN' or key in headers or key in extra_headers:
+                continue
+            raw_value = manual_row.get(key, '')
+            value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
+            if value:
+                extra_headers.append(key)
+
+    merged_headers = headers + extra_headers
+
+    override_map = {}
+    for manual_row in manual_rows:
+        isbn = (manual_row.get('ISBN') or '').strip()
+        if isbn:
+            override_map[isbn] = manual_row
+
+    merged_rows = []
+    for row in rows:
+        merged_row = dict(row)
+        isbn = (merged_row.get('ISBN') or '').strip()
+        override = override_map.get(isbn)
+        if override:
+            for key, raw_value in override.items():
+                if key == 'ISBN':
+                    continue
+                value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
+                if not value:
+                    continue
+                merged_row[key] = value
+
+            buy_price = merged_row.get('购入价格', '').strip()
+            sell_price = merged_row.get('售出价格', '').strip()
+            if sell_price:
+                merged_row['状态'] = '已售'
+            elif buy_price and merged_row.get('状态') != '已售':
+                merged_row['状态'] = '持有'
+
+        merged_rows.append(merged_row)
+
+    return merged_headers, merged_rows
+
+
 def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
     """更新 CSV，执行状态转换与草稿清理逻辑，写入前自动备份并原子写入"""
 

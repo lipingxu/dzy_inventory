@@ -67,18 +67,33 @@
 3.  **查看报表**：双击打开 `report_auto.html`。
 
 ### 2. 资产维护
-*   **录入成本**：在 `inventory.csv` 的 `购入价格` 列填入数字。
-*   **添加备注**：直接在 CSV 末尾增加新列（如“备注”），系统下次运行会将其自动展示在报表最右侧。
-*   **标记已售**：在 `售出价格` 列填入金额，书籍会自动转入“已售结项”区。
+*   **录入成本**：在 `manual_overrides.csv` 的 `购入价格` 列填入数字。
+*   **添加备注**：直接在 `manual_overrides.csv` 末尾增加新列（如“备注”），系统下次运行会将其自动展示在报表最右侧。
+*   **标记已售**：在 `manual_overrides.csv` 的 `售出价格` 列填入金额，书籍会自动转入“已售结项”区。
 
 ## 项目结构
 ```
 inventory_core.py    # 共享核心模块（CSV 同步 / 报表生成 / API 解析）
 auto_sync_data.py    # 入口 B：自动化模式 (读文件参数, 写 inventory_auto.csv)
+manual_overrides.csv # 人工覆盖文件（按 ISBN 录入购入价/售出价/备注）
 auto_fetch.py        # Playwright 自动抓取，调用 auto_sync_data.py
 .github/workflows/   # GitHub Actions 定时同步任务
 backups/             # 每次同步前的 CSV 自动备份（git 忽略）
 ```
+
+## 手工覆盖文件（推荐编辑入口）
+`manual_overrides.csv` 是一个可选的旁路文件，用来单独维护你想手工改的字段。
+
+推荐列：
+```csv
+ISBN,书名,购入价格,售出价格,备注
+```
+
+规则：
+- 程序会按 `ISBN` 精确合并到自动抓取结果
+- `书名` 主要用于你在 GitHub 上快速识别目标行
+- `购入价格` / `售出价格` / `备注` 填了才生效，留空表示不覆盖
+- 不创建这个文件时，现有自动化流程完全不受影响
 
 ## 云端定时同步（GitHub Actions）
 1. 在仓库 `Settings -> Secrets and variables -> Actions` 新增密钥：`DZY_CURL_COMMAND`。

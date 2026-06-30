@@ -14,8 +14,10 @@ from datetime import datetime
 
 from inventory_core import (
     get_clipboard_content,
+    load_manual_overrides,
     load_old_prices,
     migrate_and_update_csv,
+    merge_manual_overrides,
     generate_report,
     print_change_summary,
     process_raw_data,
@@ -71,6 +73,11 @@ if __name__ == "__main__":
 
         print(f"💾 正在同步至 {CSV_PATH}...")
         headers, rows = migrate_and_update_csv(books_data, capture_date, csv_path=CSV_PATH)
+
+        manual_headers, manual_rows = load_manual_overrides('manual_overrides.csv')
+        if manual_rows:
+            print("📝 正在合并 manual_overrides.csv ...")
+            headers, rows = merge_manual_overrides(headers, rows, manual_headers, manual_rows)
 
         print(f"📊 正在生成 {REPORT_PATH}...")
         generate_report(headers, rows, books_data, report_path=REPORT_PATH, ordered_ids=ordered_ids)

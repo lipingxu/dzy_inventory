@@ -96,6 +96,7 @@ ISBN,书名,购入价格,售出价格,备注
 - `购入价格` / `售出价格` / `备注` 以手工文件优先；仅当手工值为空时才回填主表值
 - `manual_overrides.csv` 里有但主表暂无的 ISBN 会保留，避免误删历史手工记录
 - 这个文件已使用 UTF-8 with BOM，直接双击用 Excel 打开通常不会乱码；如果仍乱码，可用 Excel 的“数据 -> 自文本/CSV”导入并手动选择 UTF-8
+- 程序会自动将 `manual_overrides.csv` 的 ISBN 写成文本保护格式（前置单引号），尽量避免 Excel 科学计数法
 
 ## 云端定时同步（GitHub Actions）
 1. 在仓库 `Settings -> Secrets and variables -> Actions` 新增密钥：`DZY_CURL_COMMAND`。

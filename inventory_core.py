@@ -95,6 +95,12 @@ def _normalize_isbn(value):
     return isbn.strip()
 
 
+def _format_isbn_for_csv(value):
+    """写回 CSV 时给 ISBN 加文本保护前缀，避免 Excel 科学计数法。"""
+    isbn = _normalize_isbn(value)
+    return f"'{isbn}" if isbn else ''
+
+
 def load_manual_overrides(overrides_path='manual_overrides.csv'):
     """读取手工覆盖文件，返回表头和数据行。"""
     manual_headers = []
@@ -140,7 +146,7 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         existing = existing_map.get(isbn)
 
         out = {h: '' for h in manual_headers}
-        out['ISBN'] = isbn
+        out['ISBN'] = _format_isbn_for_csv(isbn)
         out['书名'] = (source.get('书名') or '').strip()
 
         if existing:
@@ -171,7 +177,7 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         out = {h: '' for h in manual_headers}
         for h in manual_headers:
             out[h] = (existing.get(h) or '').strip()
-        out['ISBN'] = isbn
+        out['ISBN'] = _format_isbn_for_csv(isbn)
         manual_rows.append(out)
 
     _write_csv_atomic(overrides_path, manual_headers, manual_rows)

@@ -1,8 +1,7 @@
 """
 inventory_core.py — 图书资产管理系统共享核心逻辑
 
-sync_data.py（手动模式）和 auto_sync_data.py（自动化模式）均从此模块导入，
-避免重复维护相同代码。
+由 auto_sync_data.py 等入口脚本导入，避免重复维护相同代码。
 """
 
 import csv

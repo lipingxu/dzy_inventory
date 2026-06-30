@@ -42,7 +42,7 @@
 *   **保留用户自定义书名**：旧 CSV 中已有书名时不再被远端数据覆盖，方便用户自行标注"大字本""精装版"等版本信息。
 
 ### 5. 架构与可靠性升级 (2026-06-01)
-*   **公共逻辑抽取**: 新增 `inventory_core.py`，集中存放所有共享业务逻辑（CSV 处理、报表生成、API 解析等）。`sync_data.py` 与 `auto_sync_data.py` 瘦身为纯入口脚本，从此一处修复全局生效。
+*   **公共逻辑抽取**: 新增 `inventory_core.py`，集中存放所有共享业务逻辑（CSV 处理、报表生成、API 解析等）。`auto_sync_data.py` 瘦身为纯入口脚本，从此一处修复全局生效。
 *   **CSV 原子写入**: 写入策略改为先写 `*.csv.tmp` 后 `os.replace`，**杜绝同步过程中崩溃导致主数据文件损坏**。
 *   **自动备份**: 每次同步前自动备份当前 CSV 到 `backups/` 目录（命名格式 `inventory-YYYYMMDD_HHMMSS.csv`），默认保留最近 30 份。
 *   **更严的日期识别**: 日期列判断改用 `datetime.strptime` 严格校验，避免形如 `2026-备注` 的自定义列被误判。
@@ -104,6 +104,7 @@ ISBN,书名,购入价格,售出价格,备注
 2. 提交本仓库后，进入 `Actions` 页面启用工作流 `Scheduled Price Sync`。
 3. 当前机制为：由外部 cronjob 从每天 **00:00** 开始，**每 4 小时** 请求 GitHub 触发该工作流执行（也可手动点 `Run workflow` 立即执行）。
 4. 每次成功执行后会自动更新并提交：
+   * `last_checked.txt`
    * `inventory_auto.csv`
    * `report_auto.html`
 

@@ -87,6 +87,14 @@ def _write_csv_atomic(csv_path, headers, rows):
     os.replace(tmp_path, csv_path)
 
 
+def _normalize_isbn(value):
+    """统一 ISBN 比较口径，去空白并移除 Excel 保护前缀单引号。"""
+    isbn = (value or '').strip()
+    if isbn.startswith("'"):
+        isbn = isbn[1:]
+    return isbn.strip()
+
+
 def load_manual_overrides(overrides_path='manual_overrides.csv'):
     """读取手工覆盖文件，返回表头和数据行。"""
     manual_headers = []
@@ -101,6 +109,72 @@ def load_manual_overrides(overrides_path='manual_overrides.csv'):
             manual_rows = list(reader)
     except Exception as e:
         logger.warning("读取手工覆盖文件失败: %s", e)
+    return manual_headers, manual_rows
+
+
+def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
+    """同步手工覆盖文件：初始化、补新书、并保留人工字段。"""
+    base_headers = ['ISBN', '书名', '购入价格', '售出价格', '备注']
+
+    existing_headers, existing_rows = load_manual_overrides(overrides_path)
+    extra_headers = [h for h in existing_headers if h not in base_headers]
+    manual_headers = base_headers + extra_headers
+
+    source_rows = []
+    for row in rows:
+        isbn = _normalize_isbn(row.get('ISBN'))
+        if not isbn:
+            continue
+        source_rows.append((isbn, row))
+
+    existing_map = {}
+    for row in existing_rows:
+        isbn = _normalize_isbn(row.get('ISBN'))
+        if isbn:
+            existing_map[isbn] = row
+
+    manual_rows = []
+    seen_isbn = set()
+    for isbn, source in source_rows:
+        seen_isbn.add(isbn)
+        existing = existing_map.get(isbn)
+
+        out = {h: '' for h in manual_headers}
+        out['ISBN'] = isbn
+        out['书名'] = (source.get('书名') or '').strip()
+
+        if existing:
+            for h in manual_headers:
+                if h in ('ISBN', '书名'):
+                    continue
+                existing_value = (existing.get(h) or '').strip()
+                if existing_value:
+                    out[h] = existing_value
+                    continue
+
+                source_value = (source.get(h) or '').strip()
+                if source_value:
+                    out[h] = source_value
+        else:
+            out['购入价格'] = (source.get('购入价格') or '').strip()
+            out['售出价格'] = (source.get('售出价格') or '').strip()
+            out['备注'] = (source.get('备注') or '').strip()
+            for h in extra_headers:
+                out[h] = (source.get(h) or '').strip()
+
+        manual_rows.append(out)
+
+    # 保留 manual 里有但当前主表没有的 ISBN（防误删历史手工记录）
+    for isbn, existing in existing_map.items():
+        if isbn in seen_isbn:
+            continue
+        out = {h: '' for h in manual_headers}
+        for h in manual_headers:
+            out[h] = (existing.get(h) or '').strip()
+        out['ISBN'] = isbn
+        manual_rows.append(out)
+
+    _write_csv_atomic(overrides_path, manual_headers, manual_rows)
     return manual_headers, manual_rows
 
 
@@ -123,14 +197,14 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
 
     override_map = {}
     for manual_row in manual_rows:
-        isbn = (manual_row.get('ISBN') or '').strip()
+        isbn = _normalize_isbn(manual_row.get('ISBN'))
         if isbn:
             override_map[isbn] = manual_row
 
     merged_rows = []
     for row in rows:
         merged_row = dict(row)
-        isbn = (merged_row.get('ISBN') or '').strip()
+        isbn = _normalize_isbn(merged_row.get('ISBN'))
         override = override_map.get(isbn)
         if override:
             for key, raw_value in override.items():
@@ -141,8 +215,8 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                     continue
                 merged_row[key] = value
 
-            buy_price = merged_row.get('购入价格', '').strip()
-            sell_price = merged_row.get('售出价格', '').strip()
+            buy_price = (merged_row.get('购入价格') or '').strip()
+            sell_price = (merged_row.get('售出价格') or '').strip()
             if sell_price:
                 merged_row['状态'] = '已售'
             elif buy_price and merged_row.get('状态') != '已售':

@@ -106,6 +106,7 @@ ISBN,书名,购入价格,售出价格,备注
 4. 每次成功执行后会自动更新并提交：
    * `last_checked.txt`
    * `inventory_auto.csv`
+   * `manual_overrides.csv`
    * `report_auto.html`
 
 ### 手机查看方式

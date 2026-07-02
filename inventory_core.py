@@ -100,6 +100,17 @@ def _format_isbn_for_csv(value):
     return f"'{isbn}" if isbn else ''
 
 
+def _row_identity(row):
+    """构建行匹配键：优先 ISBN，缺失时回退书名。"""
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        return f"isbn:{isbn}"
+    title = (row.get('书名') or '').strip()
+    if title:
+        return f"title:{title}"
+    return None
+
+
 def load_manual_overrides(overrides_path='manual_overrides.csv'):
     """读取手工覆盖文件，返回表头和数据行。"""
     manual_headers = []
@@ -127,25 +138,25 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
 
     source_rows = []
     for row in rows:
-        isbn = _normalize_isbn(row.get('ISBN'))
-        if not isbn:
+        identity = _row_identity(row)
+        if not identity:
             continue
-        source_rows.append((isbn, row))
+        source_rows.append((identity, row))
 
     existing_map = {}
     for row in existing_rows:
-        isbn = _normalize_isbn(row.get('ISBN'))
-        if isbn:
-            existing_map[isbn] = row
+        identity = _row_identity(row)
+        if identity:
+            existing_map[identity] = row
 
     manual_rows = []
-    seen_isbn = set()
-    for isbn, source in source_rows:
-        seen_isbn.add(isbn)
-        existing = existing_map.get(isbn)
+    seen_keys = set()
+    for identity, source in source_rows:
+        seen_keys.add(identity)
+        existing = existing_map.get(identity)
 
         out = {h: '' for h in manual_headers}
-        out['ISBN'] = _format_isbn_for_csv(isbn)
+        out['ISBN'] = _format_isbn_for_csv(source.get('ISBN'))
         out['书名'] = (source.get('书名') or '').strip()
 
         if existing:
@@ -169,14 +180,14 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
 
         manual_rows.append(out)
 
-    # 保留 manual 里有但当前主表没有的 ISBN（防误删历史手工记录）
-    for isbn, existing in existing_map.items():
-        if isbn in seen_isbn:
+    # 保留 manual 里有但当前主表没有的记录（防误删历史手工记录）
+    for identity, existing in existing_map.items():
+        if identity in seen_keys:
             continue
         out = {h: '' for h in manual_headers}
         for h in manual_headers:
             out[h] = (existing.get(h) or '').strip()
-        out['ISBN'] = _format_isbn_for_csv(isbn)
+        out['ISBN'] = _format_isbn_for_csv(existing.get('ISBN'))
         manual_rows.append(out)
 
     _write_csv_atomic(overrides_path, manual_headers, manual_rows)
@@ -202,15 +213,15 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
 
     override_map = {}
     for manual_row in manual_rows:
-        isbn = _normalize_isbn(manual_row.get('ISBN'))
-        if isbn:
-            override_map[isbn] = manual_row
+        identity = _row_identity(manual_row)
+        if identity:
+            override_map[identity] = manual_row
 
     merged_rows = []
     for row in rows:
         merged_row = dict(row)
-        isbn = _normalize_isbn(merged_row.get('ISBN'))
-        override = override_map.get(isbn)
+        identity = _row_identity(merged_row)
+        override = override_map.get(identity) if identity else None
         if override:
             for key, raw_value in override.items():
                 if key == 'ISBN':

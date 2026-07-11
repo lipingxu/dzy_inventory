@@ -480,9 +480,12 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
     inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
     sold_rows = [r for r in rows if r.get('状态') == '已售']
+    removed_rows = [r for r in rows if r.get('状态') == '已移除']
 
     # 1. 计算核心指标
     purchased_rows = [r for r in inventory_rows if r.get('状态') == '持有']
+    ever_purchased_rows = [r for r in rows if (r.get('购入价格') or '').strip() != '']
+    observing_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
 
     total_investment = 0
     total_valuation_purchased = 0
@@ -559,6 +562,15 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .card-val {{ font-size: 1.4rem; font-weight: 800; color: #0f172a; }}
         .val-p {{ color: #ef4444; }}
         .val-n {{ color: #22c55e; }}
+        .details-card {{ background: #fff; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; overflow: hidden; }}
+        .details-card summary {{ list-style: none; cursor: pointer; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; font-weight: 700; color: #1e293b; }}
+        .details-card summary::-webkit-details-marker {{ display: none; }}
+        .details-card summary:hover {{ background: #f8fafc; }}
+        .details-hint {{ font-size: 0.85rem; font-weight: 500; color: #64748b; }}
+        .details-card summary::after {{ content: "展开"; font-size: 0.85rem; color: #3b82f6; font-weight: 600; }}
+        .details-card[open] summary::after {{ content: "收起"; }}
+        .details-body {{ padding: 0 18px 18px; border-top: 1px solid #f1f5f9; }}
+        .details-note {{ margin: 14px 0 0; color: #64748b; font-size: 0.85rem; }}
 
         #chart-container {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 300px; }}
 
@@ -605,7 +617,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     </div>
     
     <div class="summary-box">
-        <div class="card"><div class="card-label">真正持仓 (有购入价)</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+        <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
         <div class="card"><div class="card-label">总投入成本</div><div class="card-val">¥{total_investment:.2f}</div></div>
         <div class="card"><div class="card-label">购入书籍总估值</div><div class="card-val" style="color:#3b82f6">¥{total_valuation_purchased:.2f}</div></div>
         <div class="card">
@@ -621,6 +633,23 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             </div>
         </div>
     </div>
+
+    <details class="details-card">
+        <summary>
+            <span>📦 购入 / 售出统计</span>
+            <span class="details-hint">查看累计购入、当前持有、已售出等数量</span>
+        </summary>
+        <div class="details-body">
+            <div class="summary-box" style="margin: 18px 0 0;">
+                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
+                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已移除</div><div class="card-val">{len(removed_rows)} 本</div></div>
+            </div>
+            <p class="details-note">说明：累计购入按“购入价格已填写”统计；当前持有为已购入且未售出；观察中为仅跟踪价格、未填写购入价的书。</p>
+        </div>
+    </details>
 
     <div id="chart-container"></div>
 

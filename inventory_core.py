@@ -487,18 +487,32 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     ever_purchased_rows = [r for r in rows if (r.get('购入价格') or '').strip() != '']
     observing_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
 
-    total_investment = 0
+    current_holding_cost = 0
     total_valuation_purchased = 0
     for r in purchased_rows:
         try:
             cost = float(r.get('购入价格') or 0)
             latest_price = float(r.get(latest_date) or 0) if latest_date else 0
-            total_investment += cost
+            current_holding_cost += cost
             total_valuation_purchased += latest_price
         except (ValueError, TypeError):
             pass
 
-    floating_profit = total_valuation_purchased - total_investment
+    floating_profit = total_valuation_purchased - current_holding_cost
+
+    total_buy_amount = 0
+    for r in ever_purchased_rows:
+        try:
+            total_buy_amount += float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+
+    total_sell_amount = 0
+    for r in sold_rows:
+        try:
+            total_sell_amount += float(r.get('售出价格') or 0)
+        except (ValueError, TypeError):
+            pass
 
     total_realized_profit = 0
     for r in sold_rows:
@@ -617,17 +631,17 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     </div>
     
     <div class="summary-box">
-        <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
-        <div class="card"><div class="card-label">总投入成本</div><div class="card-val">¥{total_investment:.2f}</div></div>
-        <div class="card"><div class="card-label">购入书籍总估值</div><div class="card-val" style="color:#3b82f6">¥{total_valuation_purchased:.2f}</div></div>
+        <div class="card"><div class="card-label">累计购入金额</div><div class="card-val">¥{total_buy_amount:.2f}</div></div>
+        <div class="card"><div class="card-label">累计卖出金额</div><div class="card-val" style="color:#3b82f6">¥{total_sell_amount:.2f}</div></div>
+        <div class="card"><div class="card-label">当前持仓估值</div><div class="card-val" style="color:#3b82f6">¥{total_valuation_purchased:.2f}</div></div>
         <div class="card">
-            <div class="card-label">总浮动盈亏</div>
+            <div class="card-label">持仓盈亏</div>
             <div class="card-val {'val-p' if floating_profit>=0 else 'val-n'}">
                 {'+' if floating_profit>=0 else ''}{floating_profit:.2f}
             </div>
         </div>
         <div class="card">
-            <div class="card-label">已实现利润</div>
+            <div class="card-label">实际盈亏（已实现）</div>
             <div class="card-val {'val-p' if total_realized_profit>=0 else 'val-n'}">
                 {'+' if total_realized_profit>=0 else ''}{total_realized_profit:.2f}
             </div>

@@ -18,6 +18,7 @@ from inventory_core import (
     migrate_and_update_csv,
     merge_manual_overrides,
     sync_manual_overrides,
+    write_inventory_with_overrides,
     generate_report,
     print_change_summary,
     process_raw_data,
@@ -78,6 +79,7 @@ if __name__ == "__main__":
         if manual_rows:
             print("📝 正在合并 manual_overrides.csv ...")
             headers, rows = merge_manual_overrides(headers, rows, manual_headers, manual_rows)
+            write_inventory_with_overrides(headers, rows, csv_path=CSV_PATH)
 
         print(f"📊 正在生成 {REPORT_PATH}...")
         generate_report(headers, rows, books_data, report_path=REPORT_PATH, ordered_ids=ordered_ids)

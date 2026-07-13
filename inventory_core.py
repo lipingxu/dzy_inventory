@@ -243,6 +243,16 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
     return merged_headers, merged_rows
 
 
+def write_inventory_with_overrides(headers, rows, csv_path='inventory_auto.csv'):
+    """将合并后的主表数据原子写回 CSV，确保手工字段持久化到主表。"""
+    normalized_rows = []
+    for row in rows:
+        out = {h: row.get(h, '') for h in headers}
+        out['ISBN'] = _format_isbn_for_csv(out.get('ISBN'))
+        normalized_rows.append(out)
+    _write_csv_atomic(csv_path, headers, normalized_rows)
+
+
 def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
     """更新 CSV，执行状态转换与草稿清理逻辑，写入前自动备份并原子写入"""
 

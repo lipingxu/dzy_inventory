@@ -163,14 +163,8 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
             for h in manual_headers:
                 if h in ('ISBN', '书名'):
                     continue
-                existing_value = (existing.get(h) or '').strip()
-                if existing_value:
-                    out[h] = existing_value
-                    continue
-
-                source_value = (source.get(h) or '').strip()
-                if source_value:
-                    out[h] = source_value
+                # manual_overrides 作为人工主数据源：已有行按人工值原样保留（包括空值）
+                out[h] = (existing.get(h) or '').strip()
         else:
             out['购入价格'] = (source.get('购入价格') or '').strip()
             out['售出价格'] = (source.get('售出价格') or '').strip()
@@ -227,8 +221,6 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 if key == 'ISBN':
                     continue
                 value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
-                if not value:
-                    continue
                 merged_row[key] = value
 
             buy_price = (merged_row.get('购入价格') or '').strip()
@@ -237,6 +229,8 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 merged_row['状态'] = '已售'
             elif buy_price and merged_row.get('状态') != '已售':
                 merged_row['状态'] = '持有'
+            elif merged_row.get('状态') != '已售':
+                merged_row['状态'] = '未持有'
 
         merged_rows.append(merged_row)
 

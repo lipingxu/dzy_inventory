@@ -555,6 +555,134 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             key=lambda x: order_map.get(x['ISBN']) if x['ISBN'] in order_map else order_map.get(x['书名'], 999999)
         )
 
+    processing_rows = [
+        r for r in inventory_rows
+        if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
+    ]
+    observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
+    table_col_count = 6 + len(date_headers) + len(custom_headers)
+
+    def _table_headers_html(table_id):
+        headers_html = [
+            f"<th onclick=\"sortTable('{table_id}', 0)\">ISBN</th>",
+            f"<th class='title-col' onclick=\"sortTable('{table_id}', 1)\">书名</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 2, 'num')\">购入价</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 3, 'num')\">最高价</th>",
+        ]
+        for i, d in enumerate(date_headers):
+            d_text = d[5:] if len(d) > 5 else d
+            headers_html.append(
+                f"<th class='sortable' onclick=\"sortTable('{table_id}', {4+i}, 'num')\">{d_text}</th>"
+            )
+        headers_html.append(
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', {4+len(date_headers)}, 'num')\">估算盈亏</th>"
+        )
+        headers_html.append(
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', {5+len(date_headers)}, 'num')\">7天趋势</th>"
+        )
+        for i, ch in enumerate(custom_headers):
+            headers_html.append(
+                f"<th class='sortable' onclick=\"sortTable('{table_id}', {6+len(date_headers)+i})\">{ch}</th>"
+            )
+        return "".join(headers_html)
+
+    def _build_inventory_rows_html(target_rows):
+        html_rows = []
+        for r in target_rows:
+            lp_str = r.get(latest_date, "0")
+            try:
+                latest_p = float(lp_str) if lp_str else 0
+            except (ValueError, TypeError):
+                latest_p = 0
+
+            max_p = float(r['历史最高价'] or 0)
+            if latest_p == 0:
+                tr_cls = "class='gray'"
+            elif latest_p > 0 and abs(latest_p - max_p) < 0.01:
+                tr_cls = "class='at-peak'"
+            else:
+                tr_cls = ""
+
+            badges = ""
+            at_peak = latest_p > 0 and abs(latest_p - max_p) < 0.01
+            if at_peak:
+                badges += "<span class='badge badge-peak'>\U0001f525</span>"
+            if r.get('状态') == '未持有':
+                badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
+
+            raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+            current_book_info = lookup_map.get(raw_isbn) or lookup_map.get(r['书名'])
+            if current_book_info:
+                if current_book_info.get('subsidy', 0) > 0:
+                    badges += f"<span class='badge sb'>已加价{format_num(current_book_info['subsidy'])}</span>"
+                sc = current_book_info.get('state_change')
+                if sc:
+                    tp = sc.get('type')
+                    prev_y = sc.get('previousViewAcquirePrice', 0) / 100
+                    if tp == 'refused_to_passed':
+                        badges += "<span class='badge up'>新增收购</span>"
+                    elif tp == 'increase_price':
+                        badges += f"<span class='badge up'>涨{format_num(abs(latest_p - prev_y))} ↑</span>"
+                    elif tp == 'decrease_price':
+                        badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
+
+            row_html = f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}{badges}</td>"
+            max_cls = 'p-peak' if at_peak else 'p-max'
+            row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
+
+            ps = []
+            for i, d in enumerate(date_headers):
+                v = r.get(d, '')
+                cls = ""
+                if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
+                    cls = "class='p-low'"
+                row_html += f"<td {cls}>{('¥' + v) if v else '-'}</td>"
+                if v:
+                    try:
+                        ps.append(float(v))
+                    except ValueError:
+                        pass
+
+            est_val = 0
+            est_html = "-"
+            if r['购入价格'] and latest_p > 0:
+                try:
+                    est_val = latest_p - float(r['购入价格'])
+                    est_html = f"<span class='{'profit-p' if est_val>=0 else 'profit-n'}'>{'+' if est_val>=0 else ''}{est_val:.2f}</span>"
+                except (ValueError, TypeError):
+                    pass
+            row_html += f"<td data-val='{est_val}'>{est_html}</td>"
+
+            trnd_val = 0
+            trnd_html = "-"
+            if len(ps) >= 2:
+                trnd_val = ps[-1] - ps[0]
+                if trnd_val > 0:
+                    trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
+                elif trnd_val < 0:
+                    trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
+            row_html += f"<td data-val='{trnd_val}'>{trnd_html}</td>"
+
+            for ch in custom_headers:
+                row_html += f"<td>{r.get(ch, '-')}</td>"
+
+            row_html += "</tr>"
+            html_rows.append(row_html)
+        return "".join(html_rows)
+
+    inventory_table_headers = _table_headers_html('inventory-table')
+    processing_table_headers = _table_headers_html('processing-table')
+    observing_table_headers = _table_headers_html('observing-table')
+
+    inventory_rows_html = _build_inventory_rows_html(inventory_rows)
+    processing_rows_html = _build_inventory_rows_html(processing_rows)
+    observing_rows_html = _build_inventory_rows_html(observing_panel_rows)
+
+    if not processing_rows_html:
+        processing_rows_html = f"<tr><td colspan='{table_col_count}' class='empty-hint'>暂无“待售 / 已看”的持有书籍（可在 manual_overrides.csv 的“处理标签”列填写：待售、已看）。</td></tr>"
+    if not observing_rows_html:
+        observing_rows_html = f"<tr><td colspan='{table_col_count}' class='empty-hint'>暂无观察中的书籍。</td></tr>"
+
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -585,6 +713,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .details-card[open] summary::after {{ content: "收起"; }}
         .details-body {{ padding: 0 18px 18px; border-top: 1px solid #f1f5f9; }}
         .details-note {{ margin: 14px 0 0; color: #64748b; font-size: 0.85rem; }}
+        .empty-hint {{ text-align: center; color: #94a3b8; font-size: 0.9rem; padding: 20px 10px; }}
 
         #chart-container {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 300px; }}
 
@@ -665,6 +794,40 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         </div>
     </details>
 
+    <details class="details-card">
+        <summary>
+            <span>🛎️ 持有待处理（待售 / 已看）</span>
+            <span class="details-hint">仅显示当前持有且已标注处理标签的书</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table id="processing-table">
+                    <thead>
+                        <tr>{processing_table_headers}</tr>
+                    </thead>
+                    <tbody>{processing_rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <details class="details-card">
+        <summary>
+            <span>👀 观察清单（未持有）</span>
+            <span class="details-hint">仅显示观察中的书籍，可按字段排序</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table id="observing-table">
+                    <thead>
+                        <tr>{observing_table_headers}</tr>
+                    </thead>
+                    <tbody>{observing_rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
     <div id="chart-container"></div>
 
     <div class="section">
@@ -675,104 +838,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         <div class="table-wrapper">
             <table id="inventory-table">
                 <thead>
-                    <tr>
-                        <th onclick="sortTable('inventory-table', 0)">ISBN</th>
-                        <th class="title-col" onclick="sortTable('inventory-table', 1)">书名</th>
-                        <th class="sortable" onclick="sortTable('inventory-table', 2, 'num')">购入价</th>
-                        <th class="sortable" onclick="sortTable('inventory-table', 3, 'num')">最高价</th>
-                        {"".join([f"<th class='sortable' onclick='sortTable(\"inventory-table\", {4+i}, \"num\")'>{d[5:] if len(d)>5 else d}</th>" for i, d in enumerate(date_headers)])}
-                        <th class="sortable" onclick="sortTable('inventory-table', {4+len(date_headers)}, 'num')">估算盈亏</th>
-                        <th class="sortable" onclick="sortTable('inventory-table', {5+len(date_headers)}, 'num')">7天趋势</th>
-                        {"".join([f"<th class='sortable' onclick='sortTable(\"inventory-table\", {6+len(date_headers)+i})'>{ch}</th>" for i, ch in enumerate(custom_headers)])}
-                    </tr>
+                    <tr>{inventory_table_headers}</tr>
                 </thead>
-                <tbody>"""
-
-    for r in inventory_rows:
-        lp_str = r.get(latest_date, "0")
-        try:
-            latest_p = float(lp_str) if lp_str else 0
-        except (ValueError, TypeError):
-            latest_p = 0
-
-        max_p = float(r['历史最高价'] or 0)
-        # 当天价格达到历史最高价（且 > 0）时，标记为可考虑卖出
-        at_peak = latest_p > 0 and abs(latest_p - max_p) < 0.01
-        if latest_p == 0:
-            tr_cls = "class='gray'"
-        elif at_peak:
-            tr_cls = "class='at-peak'"
-        else:
-            tr_cls = ""
-
-        badges = ""
-        if at_peak:
-            badges += "<span class='badge badge-peak'>\U0001f525</span>"
-        if r.get('状态') == '未持有':
-            badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
-
-        raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
-        current_book_info = lookup_map.get(raw_isbn) or lookup_map.get(r['书名'])
-
-        if current_book_info:
-            if current_book_info.get('subsidy', 0) > 0:
-                badges += f"<span class='badge sb'>已加价{format_num(current_book_info['subsidy'])}</span>"
-            sc = current_book_info.get('state_change')
-            if sc:
-                tp = sc.get('type')
-                prev_y = sc.get('previousViewAcquirePrice', 0) / 100
-                if tp == 'refused_to_passed':
-                    badges += "<span class='badge up'>新增收购</span>"
-                elif tp == 'increase_price':
-                    badges += f"<span class='badge up'>涨{format_num(abs(latest_p - prev_y))} ↑</span>"
-                elif tp == 'decrease_price':
-                    badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
-
-        html += f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}{badges}</td>"
-        max_cls = 'p-peak' if at_peak else 'p-max'
-        html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
-
-        ps = []
-        for i, d in enumerate(date_headers):
-            v = r.get(d, '')
-            cls = ""
-            if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
-                cls = "class='p-low'"
-            html += f"<td {cls}>{('¥' + v) if v else '-'}</td>"
-            if v:
-                try:
-                    ps.append(float(v))
-                except ValueError:
-                    pass
-
-        est_val = 0
-        est_html = "-"
-        if r['购入价格'] and latest_p > 0:
-            try:
-                est_val = latest_p - float(r['购入价格'])
-                est_html = f"<span class='{'profit-p' if est_val>=0 else 'profit-n'}'>{'+' if est_val>=0 else ''}{est_val:.2f}</span>"
-            except (ValueError, TypeError):
-                pass
-        html += f"<td data-val='{est_val}'>{est_html}</td>"
-
-        trnd_val = 0
-        trnd_html = "-"
-        if len(ps) >= 2:
-            trnd_val = ps[-1] - ps[0]
-            if trnd_val > 0:
-                trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
-            elif trnd_val < 0:
-                trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
-            else:
-                trnd_html = "-"
-        html += f"<td data-val='{trnd_val}'>{trnd_html}</td>"
-
-        for ch in custom_headers:
-            html += f"<td>{r.get(ch, '-')}</td>"
-
-        html += "</tr>"
-
-    html += f"""</tbody></table></div></div>
+                <tbody>{inventory_rows_html}</tbody></table></div></div>
     <div class="section">
         <div class="section-header"><h2>✅ 已售结项</h2></div>
         <div class="table-wrapper">

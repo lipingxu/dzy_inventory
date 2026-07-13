@@ -110,6 +110,7 @@ ISBN,书名,购入价格,售出价格,备注,处理标签
 - `书名` 会跟随主表更新，方便你识别目标行
 - `购入价格` / `售出价格` / `备注` 以手工文件优先；仅当手工值为空时才回填主表值
 - 手工文件中的字段（如 `购入价格` / `售出价格` / `备注` / `处理标签`）在同步时会回写并持久化到主表 `inventory_auto.csv`
+- `处理标签` 建议用于运营分组：填 `待售` / `已看` 会进入“持有待处理”折叠面板；留空则不进入该面板
 - `manual_overrides.csv` 里有但主表暂无的 ISBN 会保留，避免误删历史手工记录
 - 这个文件已使用 UTF-8 with BOM，直接双击用 Excel 打开通常不会乱码；如果仍乱码，可用 Excel 的“数据 -> 自文本/CSV”导入并手动选择 UTF-8
 - 程序会自动将 `manual_overrides.csv` 的 ISBN 写成文本保护格式（前置单引号），尽量避免 Excel 科学计数法
@@ -128,6 +129,17 @@ ISBN,书名,购入价格,售出价格,备注,处理标签
 ### 手机查看方式
 开启 GitHub Pages（`Settings -> Pages`，选择 `Deploy from a branch`，`main` + `/root`）后，可通过：
 `https://<你的GitHub用户名>.github.io/<仓库名>/report_auto.html` 随时查看最新报表。
+
+## 给别人使用（书单不同也可直接用）
+1. **先复制仓库**：建议 Fork 本仓库到自己的 GitHub 账号。
+2. **清空你的个人数据再开始**（可选但推荐）：
+   - 清空或删除 `inventory_auto.csv`、`manual_overrides.csv` 的旧内容；
+   - 保留文件表头即可，首次同步会自动按对方书单补齐。
+3. **配置自己的抓取凭据**：在对方仓库的 `Settings -> Secrets and variables -> Actions` 设置 `DZY_CURL_COMMAND`（必须是对方自己浏览器可用的 curl 命令）。
+4. **运行一次同步初始化**：在 Actions 手动运行 `Scheduled Price Sync`（或本地执行 `python3 auto_sync_data.py <数据文件>`）。
+5. **后续维护方式**：
+   - 自动行情来自多抓鱼；
+   - 手工字段统一在 `manual_overrides.csv` 维护（购入价/售出价/备注/处理标签），同步时会回写到主表。
 
 ## 报表视觉逻辑
 *   **红色/↑**：价格上涨、浮盈。

@@ -89,6 +89,8 @@
     # 或
     python3 delete_book.py --title "棋王 树王 孩子王"
     ```
+    * 若检测到该书有购入记录（购入价格非空，含 0），脚本会先提示并要求你输入 `YES` 才继续删除。
+    * 如需跳过确认可使用：`python3 delete_book.py --isbn <ISBN> --force`
 
 ## 项目结构
 ```

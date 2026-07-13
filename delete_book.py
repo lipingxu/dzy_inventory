@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 CSV_FILES = ["inventory_auto.csv", "manual_overrides.csv"]
+MAIN_CSV = "inventory_auto.csv"
 
 
 def normalize_isbn(value: str) -> str:
@@ -31,6 +32,19 @@ def should_remove(row: dict, target_isbn: str, target_title: str) -> bool:
     if target_title and row_title == target_title:
         return True
     return False
+
+
+def find_matches(path: Path, target_isbn: str, target_title: str) -> list[dict]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    return [row for row in rows if should_remove(row, target_isbn, target_title)]
+
+
+def is_purchased_row(row: dict) -> bool:
+    # 购入价格只要填写（包含 0）即视为已购入
+    return (row.get("购入价格") or "").strip() != ""
 
 
 def remove_from_csv(path: Path, target_isbn: str, target_title: str) -> int:
@@ -61,6 +75,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="从两个 CSV 中删除指定书籍")
     parser.add_argument("--isbn", default="", help="按 ISBN 删除")
     parser.add_argument("--title", default="", help="按书名删除（精确匹配）")
+    parser.add_argument("--force", action="store_true", help="即使检测到已购入记录，也跳过确认直接删除")
     args = parser.parse_args()
 
     target_isbn = normalize_isbn(args.isbn)
@@ -70,6 +85,21 @@ def main() -> int:
         return 1
 
     repo_root = Path(__file__).resolve().parent
+    main_csv_path = repo_root / MAIN_CSV
+    matched_rows = find_matches(main_csv_path, target_isbn, target_title)
+    purchased_matches = [row for row in matched_rows if is_purchased_row(row)]
+    if purchased_matches and not args.force:
+        print("⚠️ 检测到目标书籍存在购入记录：")
+        for row in purchased_matches:
+            isbn = normalize_isbn(row.get("ISBN", ""))
+            title = (row.get("书名") or "").strip()
+            buy_price = (row.get("购入价格") or "").strip()
+            print(f"   - ISBN: {isbn or '-'} | 书名: {title or '-'} | 购入价格: {buy_price}")
+        answer = input("确认继续删除吗？输入 YES 继续，其他任意输入取消：").strip()
+        if answer != "YES":
+            print("已取消删除。")
+            return 0
+
     total_removed = 0
     for name in CSV_FILES:
         path = repo_root / name

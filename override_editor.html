@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>manual_overrides 本地编辑器</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f4f7f9; color: #334155; }
+    .page { max-width: 1600px; margin: 0 auto; padding: 24px; }
+    .hero, .panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .hero { padding: 20px 22px; margin-bottom: 18px; }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; color: #0f172a; }
+    .muted { color: #64748b; font-size: 0.95rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    button { border: 0; border-radius: 10px; padding: 10px 14px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #e2e8f0; color: #0f172a; }
+    .success { background: #16a34a; color: #fff; }
+    .warning { background: #f59e0b; color: #fff; }
+    .danger { background: #ef4444; color: #fff; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status-bar { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+    .chip { padding: 8px 12px; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 0.88rem; }
+    .panel { padding: 18px; }
+    .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .search { width: min(320px, 100%); padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; }
+    .table-wrap { overflow: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; min-width: 980px; }
+    th, td { border-bottom: 1px solid #f1f5f9; padding: 10px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: #f8fafc; color: #475569; z-index: 1; }
+    tr:nth-child(even) td { background: #fcfdff; }
+    input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; }
+    .row-actions { display: flex; gap: 6px; }
+    .log { margin-top: 16px; padding: 12px 14px; background: #0f172a; color: #e2e8f0; border-radius: 12px; min-height: 72px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .note { margin-top: 10px; font-size: 0.9rem; color: #64748b; }
+    .pill-ok { color: #166534; border-color: #bbf7d0; background: #f0fdf4; }
+    .pill-warn { color: #92400e; border-color: #fde68a; background: #fffbeb; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>📝 manual_overrides 本地编辑器</h1>
+      <div class="muted">在浏览器里编辑 override，保存到本地 CSV，并可选择提交推送后触发 GitHub Actions 重新同步。</div>
+      <div class="toolbar">
+        <button class="primary" id="saveBtn">保存到本地 CSV</button>
+        <button class="secondary" id="commitBtn">提交并推送 override</button>
+        <button class="warning" id="triggerBtn">触发 GitHub 同步</button>
+        <button class="success" id="saveSyncBtn">保存 → 推送 → 触发同步</button>
+        <button class="secondary" id="addRowBtn">新增一行</button>
+      </div>
+      <div class="status-bar" id="statusBar"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <strong id="tableTitle">manual_overrides.csv</strong>
+        <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签…">
+      </div>
+      <div class="table-wrap">
+        <table id="editorTable">
+          <thead></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="note">说明：本页面编辑的是 <code>manual_overrides.csv</code>。远端 GitHub Actions 只会读取已推送到 GitHub 的内容，所以如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
+      <div id="log" class="log">准备就绪。</div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      headers: [],
+      rows: [],
+      config: {},
+      filterText: '',
+    };
+
+    const logEl = document.getElementById('log');
+    const tableHead = document.querySelector('#editorTable thead');
+    const tableBody = document.querySelector('#editorTable tbody');
+    const tableTitle = document.getElementById('tableTitle');
+    const statusBar = document.getElementById('statusBar');
+    const searchInput = document.getElementById('searchInput');
+
+    function log(message) {
+      const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      logEl.textContent = `[${time}] ${message}\n` + logEl.textContent;
+    }
+
+    function normalizeHeaders(headers) {
+      return headers.filter(Boolean);
+    }
+
+    function renderStatusBar() {
+      const tokenChipClass = state.config.token_configured ? 'pill-ok' : 'pill-warn';
+      statusBar.innerHTML = `
+        <div class="chip">仓库：${state.config.owner || '-'} / ${state.config.repo || '-'}</div>
+        <div class="chip">分支：${state.config.branch || '-'}</div>
+        <div class="chip">工作流：${state.config.workflow_file || '-'}</div>
+        <div class="chip ${tokenChipClass}">GitHub Token：${state.config.token_configured ? '已配置' : '未配置'}</div>
+        <div class="chip">当前行数：${state.rows.length}</div>
+      `;
+    }
+
+    function renderTable() {
+      const headers = state.headers;
+      tableTitle.textContent = `manual_overrides.csv（${state.rows.length} 行）`;
+      tableHead.innerHTML = `
+        <tr>
+          ${headers.map(header => `<th>${header}</th>`).join('')}
+          <th>操作</th>
+        </tr>
+      `;
+
+      const query = state.filterText.trim().toLowerCase();
+      const visibleRows = state.rows.filter(row => {
+        if (!query) return true;
+        return headers.some(header => (row[header] || '').toLowerCase().includes(query));
+      });
+
+      tableBody.innerHTML = visibleRows.map((row, filteredIndex) => {
+        const actualIndex = state.rows.indexOf(row);
+        return `
+          <tr data-row-index="${actualIndex}">
+            ${headers.map(header => {
+              const value = escapeHtml(row[header] || '');
+              return `<td><input type="text" data-field="${header}" value="${value}"></td>`;
+            }).join('')}
+            <td>
+              <div class="row-actions">
+                <button class="danger" data-action="delete" data-row-index="${actualIndex}">删除</button>
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function collectRowsFromDom() {
+      const rows = [];
+      document.querySelectorAll('#editorTable tbody tr').forEach((tr) => {
+        const rowIndex = Number(tr.dataset.rowIndex);
+        const row = { ...state.rows[rowIndex] };
+        tr.querySelectorAll('input[data-field]').forEach((input) => {
+          row[input.dataset.field] = input.value;
+        });
+        rows.push([rowIndex, row]);
+      });
+
+      for (const [rowIndex, row] of rows) {
+        state.rows[rowIndex] = row;
+      }
+      return state.rows;
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || '请求失败');
+      }
+      return data;
+    }
+
+    async function loadData() {
+      const data = await api('/api/data');
+      state.headers = normalizeHeaders(data.headers);
+      state.rows = data.rows || [];
+      state.config = data.config || {};
+      renderStatusBar();
+      renderTable();
+      log('已加载 manual_overrides.csv');
+    }
+
+    async function saveCsv() {
+      collectRowsFromDom();
+      const result = await api('/api/save', {
+        method: 'POST',
+        body: JSON.stringify({ headers: state.headers, rows: state.rows }),
+      });
+      log(result.message);
+      await loadData();
+    }
+
+    async function commitPush() {
+      const result = await api('/api/commit-push', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      log(result.commit ? `${result.message} 提交：${result.commit}` : result.message);
+    }
+
+    async function triggerSync() {
+      const result = await api('/api/trigger-sync', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      log(result.message);
+    }
+
+    async function savePublishSync() {
+      collectRowsFromDom();
+      const result = await api('/api/save-publish-sync', {
+        method: 'POST',
+        body: JSON.stringify({ headers: state.headers, rows: state.rows }),
+      });
+      log([result.message, ...(result.details || []), result.commit ? `提交：${result.commit}` : ''].filter(Boolean).join('\n'));
+      await loadData();
+    }
+
+    function addRow() {
+      const row = Object.fromEntries(state.headers.map(header => [header, '']));
+      state.rows.unshift(row);
+      renderStatusBar();
+      renderTable();
+      log('已新增一行，请填写后保存。');
+    }
+
+    function deleteRow(rowIndex) {
+      const row = state.rows[rowIndex] || {};
+      const title = row['书名'] || row['ISBN'] || '该行';
+      if (!window.confirm(`确认删除这一行吗？\n${title}`)) {
+        return;
+      }
+      state.rows.splice(rowIndex, 1);
+      renderStatusBar();
+      renderTable();
+      log(`已从编辑器移除：${title}`);
+    }
+
+    function setBusy(busy) {
+      document.querySelectorAll('button').forEach(btn => btn.disabled = busy);
+    }
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await saveCsv(); } catch (err) { log(`保存失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('commitBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await commitPush(); } catch (err) { log(`提交推送失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('triggerBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await triggerSync(); } catch (err) { log(`触发同步失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('saveSyncBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await savePublishSync(); } catch (err) { log(`保存并同步失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('addRowBtn').addEventListener('click', addRow);
+
+    searchInput.addEventListener('input', (event) => {
+      collectRowsFromDom();
+      state.filterText = event.target.value || '';
+      renderTable();
+    });
+
+    tableBody.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-action="delete"]');
+      if (!button) return;
+      deleteRow(Number(button.dataset.rowIndex));
+    });
+
+    loadData().catch(err => {
+      log(`初始化失败：${err.message}`);
+    });
+  </script>
+</body>
+</html>

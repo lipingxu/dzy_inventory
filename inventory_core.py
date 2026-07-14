@@ -547,17 +547,30 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         if b.get('title'):
             lookup_map[b['title']] = b
 
+    order_map = {}
     if ordered_ids:
-        order_map = {}
         for idx, bid in enumerate(ordered_ids):
             b_info = books_data.get(bid, {})
             if b_info.get('isbn'):
                 order_map[b_info['isbn']] = idx
             if b_info.get('title'):
                 order_map[b_info['title']] = idx
-        inventory_rows.sort(
-            key=lambda x: order_map.get(x['ISBN']) if x['ISBN'] in order_map else order_map.get(x['书名'], 999999)
+
+    def _latest_price_value(row):
+        if not latest_date:
+            return 0
+        raw = row.get(latest_date, "0")
+        try:
+            return float(raw) if raw else 0
+        except (ValueError, TypeError):
+            return 0
+
+    inventory_rows.sort(
+        key=lambda row: (
+            1 if _latest_price_value(row) == 0 else 0,
+            order_map.get(row['ISBN']) if row['ISBN'] in order_map else order_map.get(row['书名'], 999999),
         )
+    )
 
     processing_rows = [
         r for r in inventory_rows
@@ -593,11 +606,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     def _build_inventory_rows_html(target_rows):
         html_rows = []
         for r in target_rows:
-            lp_str = r.get(latest_date, "0")
-            try:
-                latest_p = float(lp_str) if lp_str else 0
-            except (ValueError, TypeError):
-                latest_p = 0
+            latest_p = _latest_price_value(r)
 
             max_p = float(r['历史最高价'] or 0)
             if latest_p == 0:
@@ -845,17 +854,21 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     <tr>{inventory_table_headers}</tr>
                 </thead>
                 <tbody>{inventory_rows_html}</tbody></table></div></div>
-    <div class="section">
-        <div class="section-header"><h2>✅ 已售结项</h2></div>
-        <div class="table-wrapper">
-            <table>
-                <thead>
-                    <tr>
-                        <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
-                        {"".join([f"<th>{ch}</th>" for ch in custom_headers])}
-                    </tr>
-                </thead>
-                <tbody>"""
+    <details class="details-card">
+        <summary>
+            <span>✅ 已售结项</span>
+            <span class="details-hint">查看已卖出书籍与已实现结果</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
+                            {"".join([f"<th>{ch}</th>" for ch in custom_headers])}
+                        </tr>
+                    </thead>
+                    <tbody>"""
 
     for r in sold_rows:
         raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
@@ -872,7 +885,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             html += f"<td>{r.get(ch, '-')}</td>"
         html += "</tr>"
 
-    html += f"""</tbody></table></div></div>
+    html += f"""</tbody></table></div></div></details>
     
     <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>

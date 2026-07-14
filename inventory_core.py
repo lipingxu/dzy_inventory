@@ -790,27 +790,22 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         </div>
     </div>
 
-    <details class="details-card">
-        <summary>
-            <span>📦 购入 / 售出统计</span>
-            <span class="details-hint">查看累计购入、当前持有、已售出等数量</span>
-        </summary>
-        <div class="details-body">
-            <div class="summary-box" style="margin: 18px 0 0;">
-                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
-                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
-                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已移除</div><div class="card-val">{len(removed_rows)} 本</div></div>
-            </div>
-            <p class="details-note">说明：累计购入按“购入价格已填写”统计；当前持有为已购入且未售出；观察中为仅跟踪价格、未填写购入价的书。</p>
+    <div class="section">
+        <div class="section-header">
+            <h2>📚 当前库存（{len(inventory_rows)} 本）</h2>
+            <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
         </div>
-    </details>
+        <div class="table-wrapper">
+            <table id="inventory-table">
+                <thead>
+                    <tr>{inventory_table_headers}</tr>
+                </thead>
+                <tbody>{inventory_rows_html}</tbody></table></div></div>
 
     <details class="details-card">
         <summary>
-            <span>🛎️ 持有待处理（待售 / 已看）</span>
-            <span class="details-hint">仅显示当前持有且已标注处理标签的书</span>
+            <span>🛎️ 持有待处理（{len(processing_rows)} 本）</span>
+            <span class="details-hint">当前持有且已标注待售 / 已看的书</span>
         </summary>
         <div class="details-body">
             <div class="table-wrapper" style="margin-top:18px;">
@@ -826,8 +821,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
     <details class="details-card">
         <summary>
-            <span>👀 观察清单（未持有）</span>
-            <span class="details-hint">仅显示观察中的书籍，可按字段排序</span>
+            <span>👀 观察清单（{len(observing_panel_rows)} 本）</span>
+            <span class="details-hint">未持有、仅观察行情的书籍</span>
         </summary>
         <div class="details-body">
             <div class="table-wrapper" style="margin-top:18px;">
@@ -841,22 +836,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         </div>
     </details>
 
-    <div id="chart-container"></div>
-
-    <div class="section">
-        <div class="section-header">
-            <h2>📊 当前库存 (持有中)</h2>
-            <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
-        </div>
-        <div class="table-wrapper">
-            <table id="inventory-table">
-                <thead>
-                    <tr>{inventory_table_headers}</tr>
-                </thead>
-                <tbody>{inventory_rows_html}</tbody></table></div></div>
     <details class="details-card">
         <summary>
-            <span>✅ 已售结项</span>
+            <span>✅ 已售结项（{len(sold_rows)} 本）</span>
             <span class="details-hint">查看已卖出书籍与已实现结果</span>
         </summary>
         <div class="details-body">
@@ -886,7 +868,26 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         html += "</tr>"
 
     html += f"""</tbody></table></div></div></details>
-    
+
+    <div id="chart-container"></div>
+
+    <details class="details-card">
+        <summary>
+            <span>📦 购入 / 售出统计（5 项）</span>
+            <span class="details-hint">查看累计购入、当前持有、已售出等数量</span>
+        </summary>
+        <div class="details-body">
+            <div class="summary-box" style="margin: 18px 0 0;">
+                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
+                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已移除</div><div class="card-val">{len(removed_rows)} 本</div></div>
+            </div>
+            <p class="details-note">说明：累计购入按“购入价格已填写”统计；当前持有为已购入且未售出；观察中为仅跟踪价格、未填写购入价的书。</p>
+        </div>
+    </details>
+     
     <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>
         // 1. 初始化趋势图

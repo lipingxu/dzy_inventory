@@ -25,11 +25,17 @@
     .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .search { width: min(320px, 100%); padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; }
     .table-wrap { overflow: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
-    table { width: 100%; border-collapse: collapse; min-width: 980px; }
+    table { width: 100%; border-collapse: collapse; min-width: 980px; table-layout: fixed; }
     th, td { border-bottom: 1px solid #f1f5f9; padding: 10px; text-align: left; vertical-align: top; }
     th { position: sticky; top: 0; background: #f8fafc; color: #475569; z-index: 1; }
     tr:nth-child(even) td { background: #fcfdff; }
     input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; }
+    th.col-isbn, td.col-isbn { width: 170px; }
+    th.col-buy, td.col-buy, th.col-sell, td.col-sell { width: 100px; }
+    th.col-tag, td.col-tag { width: 110px; }
+    th.col-action, td.col-action { width: 88px; }
+    th.col-title, td.col-title { width: 320px; }
+    th.col-note, td.col-note { width: auto; }
     .row-actions { display: flex; gap: 6px; }
     .log { margin-top: 16px; padding: 12px 14px; background: #0f172a; color: #e2e8f0; border-radius: 12px; min-height: 72px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
     .note { margin-top: 10px; font-size: 0.9rem; color: #64748b; }
@@ -105,11 +111,20 @@
 
     function renderTable() {
       const headers = state.headers;
+      const getColClass = (header) => {
+        if (header === 'ISBN') return 'col-isbn';
+        if (header === '购入价格') return 'col-buy';
+        if (header === '售出价格') return 'col-sell';
+        if (header === '处理标签') return 'col-tag';
+        if (header === '书名') return 'col-title';
+        if (header === '备注') return 'col-note';
+        return '';
+      };
       tableTitle.textContent = `manual_overrides.csv（${state.rows.length} 行）`;
       tableHead.innerHTML = `
         <tr>
-          ${headers.map(header => `<th>${header}</th>`).join('')}
-          <th>操作</th>
+          ${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}
+          <th class="col-action">操作</th>
         </tr>
       `;
 
@@ -125,9 +140,9 @@
           <tr data-row-index="${actualIndex}">
             ${headers.map(header => {
               const value = escapeHtml(row[header] || '');
-              return `<td><input type="text" data-field="${header}" value="${value}"></td>`;
+              return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}"></td>`;
             }).join('')}
-            <td>
+            <td class="col-action">
               <div class="row-actions">
                 <button class="danger" data-action="delete" data-row-index="${actualIndex}">删除</button>
               </div>

@@ -157,7 +157,17 @@ ISBN,书名,购入价格,售出价格,备注,处理标签
    export GITHUB_TOKEN=你的令牌
    python3 override_editor.py
    ```
-5. 推荐使用“保存 → 推送 → 触发同步”，因为 GitHub Actions 只能读取**已推送到远端仓库**的内容，无法直接读取你本地尚未推送的修改。
+5. Token 推荐使用 **GitHub Fine-grained personal access token**，并至少给当前仓库以下权限：
+   - **Actions: Read and write**（用于触发 `workflow_dispatch`）
+   - **Contents: Read and write**（用于本地编辑器里的提交并推送）
+6. Token 创建位置：
+   - GitHub 右上角头像 → **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
+7. 如果你想长期在本机可用，可写入 shell 配置文件（如 `~/.zshrc`）：
+   ```bash
+   export GITHUB_TOKEN=你的令牌
+   source ~/.zshrc
+   ```
+8. 推荐使用“保存 → 推送 → 触发同步”，因为 GitHub Actions 只能读取**已推送到远端仓库**的内容，无法直接读取你本地尚未推送的修改。
 
 ### 手机查看方式
 开启 GitHub Pages（`Settings -> Pages`，选择 `Deploy from a branch`，`main` + `/root`）后，可通过：

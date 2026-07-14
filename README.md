@@ -151,6 +151,7 @@ ISBN,书名,购入价格,售出价格,备注,处理标签
    - **提交并推送 override**
    - **触发 GitHub 同步**
    - **保存 → 推送 → 触发同步**
+   - **删除**：仅从当前编辑器表格中移除这一行；需要你后续点击“保存到本地 CSV”才会真正写入 `manual_overrides.csv`
 3. “触发 GitHub 同步”走的就是当前 cron job 同样的 **GitHub `workflow_dispatch` 机制**，目标工作流为 `scheduled-price-sync.yml`。
 4. 如需启用触发按钮，需要在本地启动前设置 `GITHUB_TOKEN`（或 `GH_TOKEN`）：
    ```bash
@@ -168,6 +169,7 @@ ISBN,书名,购入价格,售出价格,备注,处理标签
    source ~/.zshrc
    ```
 8. 推荐使用“保存 → 推送 → 触发同步”，因为 GitHub Actions 只能读取**已推送到远端仓库**的内容，无法直接读取你本地尚未推送的修改。
+9. 注意：编辑器中的“删除”按钮**不会**自动删除 `inventory_auto.csv` 中的对应书，也不会自动 commit / push / trigger workflow；它只是删除当前 override 编辑行。若该书仍存在于主表或多抓鱼返回列表，后续同步时这行可能再次被自动补回。
 
 ### 手机查看方式
 开启 GitHub Pages（`Settings -> Pages`，选择 `Deploy from a branch`，`main` + `/root`）后，可通过：

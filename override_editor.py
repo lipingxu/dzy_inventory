@@ -37,7 +37,7 @@ from inventory_core import _format_isbn_for_csv, _write_csv_atomic
 REPO_ROOT = Path(__file__).resolve().parent
 MANUAL_CSV_PATH = REPO_ROOT / "manual_overrides.csv"
 HTML_PATH = REPO_ROOT / "override_editor.html"
-DEFAULT_HEADERS = ["ISBN", "书名", "购入价格", "售出价格", "备注", "处理标签"]
+DEFAULT_HEADERS = ["记录ID", "ISBN", "书名", "购入价格", "售出价格", "备注", "处理标签"]
 DEFAULT_WORKFLOW_FILE = "scheduled-price-sync.yml"
 DEFAULT_COMMIT_MESSAGE = "chore: update manual overrides via local editor"
 

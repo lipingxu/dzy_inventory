@@ -11,12 +11,14 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-FIXED_HEADERS = ['ISBN', '书名', '状态', '购入价格', '售出价格', '历史最高价']
+RECORD_ID_FIELD = '记录ID'
+FIXED_HEADERS = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', '历史最高价']
 BACKUP_DIR = "backups"
 MAX_BACKUPS = 30
 
@@ -100,8 +102,15 @@ def _format_isbn_for_csv(value):
     return f"'{isbn}" if isbn else ''
 
 
+def _generate_record_id():
+    return uuid.uuid4().hex
+
+
 def _row_identity(row):
-    """构建行匹配键：优先 ISBN，缺失时回退书名。"""
+    """构建行匹配键：优先记录ID，其次 ISBN，最后书名。"""
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        return f"id:{record_id}"
     isbn = _normalize_isbn(row.get('ISBN'))
     if isbn:
         return f"isbn:{isbn}"
@@ -130,7 +139,7 @@ def load_manual_overrides(overrides_path='manual_overrides.csv'):
 
 def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
     """同步手工覆盖文件：初始化、补新书、并保留人工字段。"""
-    base_headers = ['ISBN', '书名', '购入价格', '售出价格', '备注']
+    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '购入价格', '售出价格', '备注']
 
     existing_headers, existing_rows = load_manual_overrides(overrides_path)
     extra_headers = [h for h in existing_headers if h not in base_headers]
@@ -156,12 +165,13 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         existing = existing_map.get(identity)
 
         out = {h: '' for h in manual_headers}
+        out[RECORD_ID_FIELD] = (source.get(RECORD_ID_FIELD) or '').strip()
         out['ISBN'] = _format_isbn_for_csv(source.get('ISBN'))
         out['书名'] = (source.get('书名') or '').strip()
 
         if existing:
             for h in manual_headers:
-                if h in ('ISBN', '书名'):
+                if h in (RECORD_ID_FIELD, 'ISBN', '书名'):
                     continue
                 # manual_overrides 作为人工主数据源：已有行按人工值原样保留（包括空值）
                 out[h] = (existing.get(h) or '').strip()
@@ -181,6 +191,8 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         out = {h: '' for h in manual_headers}
         for h in manual_headers:
             out[h] = (existing.get(h) or '').strip()
+        if not out.get(RECORD_ID_FIELD):
+            out[RECORD_ID_FIELD] = (existing.get(RECORD_ID_FIELD) or '').strip()
         out['ISBN'] = _format_isbn_for_csv(existing.get('ISBN'))
         manual_rows.append(out)
 
@@ -218,7 +230,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
         override = override_map.get(identity) if identity else None
         if override:
             for key, raw_value in override.items():
-                if key == 'ISBN':
+                if key in (RECORD_ID_FIELD, 'ISBN'):
                     continue
                 value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
                 merged_row[key] = value
@@ -242,6 +254,8 @@ def write_inventory_with_overrides(headers, rows, csv_path='inventory_auto.csv')
     normalized_rows = []
     for row in rows:
         out = {h: row.get(h, '') for h in headers}
+        if not (out.get(RECORD_ID_FIELD) or '').strip():
+            out[RECORD_ID_FIELD] = _generate_record_id()
         out['ISBN'] = _format_isbn_for_csv(out.get('ISBN'))
         normalized_rows.append(out)
     _write_csv_atomic(csv_path, headers, normalized_rows)
@@ -269,6 +283,9 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             if reader.fieldnames:
                 reader.fieldnames = [name.strip() for name in reader.fieldnames]
             rows = list(reader)
+    for r in rows:
+        if not (r.get(RECORD_ID_FIELD) or '').strip():
+            r[RECORD_ID_FIELD] = _generate_record_id()
 
     # 3. 确定日期列、自定义列并归一化
     existing_dates = []
@@ -326,10 +343,18 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
     new_headers = FIXED_HEADERS + sorted(custom_headers) + tracked_dates
 
     # 4. 匹配并更新
-    isbn_map = {r['ISBN'].strip(): r for r in rows if r.get('ISBN') and r.get('ISBN').strip()}
-    title_map = {r['书名'].strip(): r for r in rows if r.get('书名') and r.get('书名').strip()}
+    active_rows = [r for r in rows if r.get('状态') != '已售']
+    isbn_map = {}
+    title_map = {}
+    for r in active_rows:
+        isbn_key = _normalize_isbn(r.get('ISBN'))
+        title_key = (r.get('书名') or '').strip()
+        if isbn_key and isbn_key not in isbn_map:
+            isbn_map[isbn_key] = r
+        if title_key and title_key not in title_map:
+            title_map[title_key] = r
 
-    hit_keys = set()
+    live_keys = set()
     for book_id, info in books_data.items():
         isbn = info['isbn'].strip() if info['isbn'] else ""
         title = info['title'].strip()
@@ -342,7 +367,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         else:
             matched_row = title_map.get(title)
         key = (isbn or title).strip()
-        hit_keys.add(key)
+        live_keys.add(key)
 
         if matched_row:
             if isbn:
@@ -355,6 +380,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         else:
             new_row = {h: '' for h in new_headers}
             new_row.update({
+                RECORD_ID_FIELD: _generate_record_id(),
                 'ISBN': isbn, '书名': title, '状态': '未持有',
                 '购入价格': '', '售出价格': '', '历史最高价': '0.00',
                 capture_date: price
@@ -363,12 +389,10 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
 
     # 5. 状态转换与草稿清理
     final_data = []
-    seen_keys = set()
     for row in rows:
-        key = (row.get('ISBN') or row.get('书名', '')).strip()
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
+        key = (_normalize_isbn(row.get('ISBN')) or (row.get('书名') or '')).strip()
+        if not (row.get(RECORD_ID_FIELD) or '').strip():
+            row[RECORD_ID_FIELD] = _generate_record_id()
 
         # 规则 A：自动转"已售"
         try:
@@ -383,7 +407,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             row['状态'] = '持有' if bp_raw != '' else '未持有'
 
         # 规则 B：识别"已移除"
-        if key not in hit_keys:
+        if row.get('状态') != '已售' and key not in live_keys:
             bp_raw = row.get('购入价格', '').strip()
             sp_raw = row.get('售出价格', '').strip()
             if bp_raw == '' and sp_raw == '' and row.get('状态') in ['持有', '未持有']:
@@ -430,12 +454,15 @@ def load_old_prices(csv_path):
         with open(csv_path, 'r', encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
             for r in reader:
+                if r.get('状态') == '已售':
+                    continue
                 date_cols = [k for k in r.keys() if _is_date_column(k)]
                 if date_cols:
                     last_date = sorted(date_cols)[-1]
                     if r.get(last_date):
                         try:
-                            old_prices[r.get('ISBN', '') or r.get('书名', '')] = float(r[last_date])
+                            key = _normalize_isbn(r.get('ISBN', '')) or r.get('书名', '')
+                            old_prices[key] = float(r[last_date])
                         except ValueError:
                             pass
     except Exception as e:

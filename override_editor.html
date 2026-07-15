@@ -30,6 +30,8 @@
     th { position: sticky; top: 0; background: #f8fafc; color: #475569; z-index: 1; }
     tr:nth-child(even) td { background: #fcfdff; }
     input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; }
+    input[readonly] { background: #f8fafc; color: #64748b; }
+    th.col-id, td.col-id { width: 130px; }
     th.col-isbn, td.col-isbn { width: 170px; }
     th.col-buy, td.col-buy, th.col-sell, td.col-sell { width: 100px; }
     th.col-tag, td.col-tag { width: 110px; }
@@ -112,6 +114,7 @@
     function renderTable() {
       const headers = state.headers;
       const getColClass = (header) => {
+        if (header === '记录ID') return 'col-id';
         if (header === 'ISBN') return 'col-isbn';
         if (header === '购入价格') return 'col-buy';
         if (header === '售出价格') return 'col-sell';
@@ -140,7 +143,10 @@
           <tr data-row-index="${actualIndex}">
             ${headers.map(header => {
               const value = escapeHtml(row[header] || '');
-              return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}"></td>`;
+              const isReadonly = header === '记录ID';
+              const readonlyAttr = isReadonly ? 'readonly' : '';
+              const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
+              return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}></td>`;
             }).join('')}
             <td class="col-action">
               <div class="row-actions">

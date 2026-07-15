@@ -90,7 +90,7 @@
 ### 2. 资产维护
 *   **录入成本**：在 `manual_overrides.csv` 的 `购入价格` 列填入数字。
 *   **添加备注**：直接在 `manual_overrides.csv` 末尾增加新列（如“备注”），系统下次运行会将其自动展示在报表最右侧。
-*   **标记已售**：在 `manual_overrides.csv` 的 `售出价格` 列填入金额，书籍会自动转入“已售结项”区。
+*   **标记已售**：在 `manual_overrides.csv` 的 `售出价格` 列填入金额，书籍会自动转入“已售结项”区，并自动补 `售出时间`（可手工改）。
 *   **本地可视化编辑**：运行 `python3 override_editor.py` 打开本地编辑页，可直接编辑 `manual_overrides.csv`，并通过按钮执行“保存 → 提交推送 → 触发同步”。
 *   **删除书籍（推荐）**：在项目根目录运行 `delete_book.py`，会同时删除两个 CSV 中的目标书籍：
     ```bash
@@ -105,7 +105,7 @@
 ```
 inventory_core.py    # 共享核心模块（CSV 同步 / 报表生成 / API 解析）
 auto_sync_data.py    # 入口 B：自动化模式 (读文件参数, 写 inventory_auto.csv)
-manual_overrides.csv # 人工覆盖文件（按 ISBN 录入购入价/售出价/备注）
+manual_overrides.csv # 人工覆盖文件（录入购入价/售出价/售出时间/备注）
 auto_fetch.py        # Playwright 自动抓取，调用 auto_sync_data.py
 override_editor.py   # 本地 override 可视化编辑器（保存/推送/触发同步）
 override_editor.html # 本地编辑器页面
@@ -119,7 +119,7 @@ backups/             # 每次同步前的 CSV 自动备份（git 忽略）
 
 推荐列：
 ```csv
-记录ID,ISBN,书名,购入价格,售出价格,备注,处理标签
+记录ID,ISBN,书名,购入价格,售出价格,售出时间,备注,处理标签
 ```
 
 `处理标签` 可选值：`待售`、`已看`（用于报表中的“持有待处理”折叠面板）。
@@ -129,7 +129,7 @@ backups/             # 每次同步前的 CSV 自动备份（git 忽略）
 - 程序会优先按 `ISBN` 精确合并；若 `ISBN` 为空则回退按 `书名` 合并
 - 每次同步会自动维护 `manual_overrides.csv`：首次自动初始化，后续自动补新书
 - `书名` 会跟随主表更新，方便你识别目标行
-- `购入价格` / `售出价格` / `备注` / `处理标签` 以手工文件为准（强覆盖关系）
+- `购入价格` / `售出价格` / `售出时间` / `备注` / `处理标签` 以手工文件为准（强覆盖关系）
 - 手工文件中的上述字段会在同步时回写并持久化到主表 `inventory_auto.csv`（包含清空值）
 - `处理标签` 建议用于运营分组：填 `待售` / `已看` 会进入“持有待处理”折叠面板；留空则不进入该面板
 - `manual_overrides.csv` 里有但主表暂无的 ISBN 会保留，避免误删历史手工记录
@@ -197,12 +197,12 @@ backups/             # 每次同步前的 CSV 自动备份（git 忽略）
 
 `inventory_auto.csv`
 ```csv
-ISBN,书名,状态,购入价格,售出价格,历史最高价,备注,处理标签
+记录ID,ISBN,书名,状态,购入价格,售出价格,售出时间,历史最高价,备注,处理标签
 ```
 
 `manual_overrides.csv`
 ```csv
-记录ID,ISBN,书名,购入价格,售出价格,备注,处理标签
+记录ID,ISBN,书名,购入价格,售出价格,售出时间,备注,处理标签
 ```
 
 说明：

@@ -34,6 +34,7 @@
     th.col-id, td.col-id { width: 130px; }
     th.col-isbn, td.col-isbn { width: 170px; }
     th.col-buy, td.col-buy, th.col-sell, td.col-sell { width: 100px; }
+    th.col-sold-at, td.col-sold-at { width: 120px; }
     th.col-tag, td.col-tag { width: 110px; }
     th.col-action, td.col-action { width: 88px; }
     th.col-title, td.col-title { width: 320px; }
@@ -118,6 +119,7 @@
         if (header === 'ISBN') return 'col-isbn';
         if (header === '购入价格') return 'col-buy';
         if (header === '售出价格') return 'col-sell';
+        if (header === '售出时间') return 'col-sold-at';
         if (header === '处理标签') return 'col-tag';
         if (header === '书名') return 'col-title';
         if (header === '备注') return 'col-note';

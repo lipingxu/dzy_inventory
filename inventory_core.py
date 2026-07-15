@@ -18,7 +18,8 @@ logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 RECORD_ID_FIELD = '记录ID'
-FIXED_HEADERS = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', '历史最高价']
+SOLD_AT_FIELD = '售出时间'
+FIXED_HEADERS = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', SOLD_AT_FIELD, '历史最高价']
 BACKUP_DIR = "backups"
 MAX_BACKUPS = 30
 
@@ -139,7 +140,7 @@ def load_manual_overrides(overrides_path='manual_overrides.csv'):
 
 def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
     """同步手工覆盖文件：初始化、补新书、并保留人工字段。"""
-    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '购入价格', '售出价格', '备注']
+    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '购入价格', '售出价格', SOLD_AT_FIELD, '备注']
 
     existing_headers, existing_rows = load_manual_overrides(overrides_path)
     extra_headers = [h for h in existing_headers if h not in base_headers]
@@ -178,6 +179,7 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         else:
             out['购入价格'] = (source.get('购入价格') or '').strip()
             out['售出价格'] = (source.get('售出价格') or '').strip()
+            out[SOLD_AT_FIELD] = (source.get(SOLD_AT_FIELD) or '').strip()
             out['备注'] = (source.get('备注') or '').strip()
             for h in extra_headers:
                 out[h] = (source.get(h) or '').strip()
@@ -224,6 +226,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
             override_map[identity] = manual_row
 
     merged_rows = []
+    today = datetime.now().strftime('%Y-%m-%d')
     for row in rows:
         merged_row = dict(row)
         identity = _row_identity(merged_row)
@@ -237,11 +240,16 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
 
             buy_price = (merged_row.get('购入价格') or '').strip()
             sell_price = (merged_row.get('售出价格') or '').strip()
+            sold_at = (merged_row.get(SOLD_AT_FIELD) or '').strip()
             if sell_price:
+                if not sold_at:
+                    merged_row[SOLD_AT_FIELD] = today
                 merged_row['状态'] = '已售'
             elif buy_price and merged_row.get('状态') != '已售':
+                merged_row[SOLD_AT_FIELD] = ''
                 merged_row['状态'] = '持有'
             elif merged_row.get('状态') != '已售':
+                merged_row[SOLD_AT_FIELD] = ''
                 merged_row['状态'] = '未持有'
 
         merged_rows.append(merged_row)
@@ -272,6 +280,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             for r in old_rows:
                 r['状态'] = r.get('状态', '持有')
                 r['售出价格'] = r.get('售出价格', '')
+                r[SOLD_AT_FIELD] = r.get(SOLD_AT_FIELD, '')
         temp_headers = FIXED_HEADERS + [h for h in old_rows[0].keys() if h not in FIXED_HEADERS] if old_rows else FIXED_HEADERS
         _write_csv_atomic(csv_path, temp_headers, old_rows)
 
@@ -382,7 +391,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             new_row.update({
                 RECORD_ID_FIELD: _generate_record_id(),
                 'ISBN': isbn, '书名': title, '状态': '未持有',
-                '购入价格': '', '售出价格': '', '历史最高价': '0.00',
+                '购入价格': '', '售出价格': '', SOLD_AT_FIELD: '', '历史最高价': '0.00',
                 capture_date: price
             })
             rows.append(new_row)
@@ -397,6 +406,8 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         # 规则 A：自动转"已售"
         try:
             if float(row.get('售出价格') or 0) > 0:
+                if not (row.get(SOLD_AT_FIELD) or '').strip():
+                    row[SOLD_AT_FIELD] = capture_date
                 row['状态'] = '已售'
         except Exception as e:
             logger.warning("售出价格解析失败 '%s': %s", row.get('书名'), e)
@@ -405,6 +416,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         if row['状态'] not in ['已售', '已移除']:
             bp_raw = row.get('购入价格', '').strip()
             row['状态'] = '持有' if bp_raw != '' else '未持有'
+            row[SOLD_AT_FIELD] = ''
 
         # 规则 B：识别"已移除"
         if row.get('状态') != '已售' and key not in live_keys:
@@ -892,7 +904,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                 <table>
                     <thead>
                         <tr>
-                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>净利润</th>
+                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>售出时间</th><th>净利润</th>
                             {"".join([f"<th>{ch}</th>" for ch in custom_headers])}
                         </tr>
                     </thead>
@@ -908,7 +920,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             except (ValueError, TypeError):
                 pass
         html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
-        html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{profit}</td>"
+        html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
         for ch in custom_headers:
             html += f"<td>{r.get(ch, '-')}</td>"
         html += "</tr>"

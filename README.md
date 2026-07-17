@@ -92,14 +92,20 @@
 *   **添加备注**：直接在 `manual_overrides.csv` 末尾增加新列（如“备注”），系统下次运行会将其自动展示在报表最右侧。
 *   **标记已售**：在 `manual_overrides.csv` 的 `售出价格` 列填入金额，书籍会自动转入“已售结项”区，并自动补 `售出时间`（可手工改）。
 *   **本地可视化编辑**：运行 `python3 override_editor.py` 打开本地编辑页，可直接编辑 `manual_overrides.csv`，并通过按钮执行“保存 → 提交推送 → 触发同步”。
-*   **删除书籍（推荐）**：在项目根目录运行 `delete_book.py`，会同时删除两个 CSV 中的目标书籍：
+*   **删除书籍（推荐）**：在项目根目录运行 `delete_book.py`，会同时删除两个 CSV 中的目标书籍。常用方式：
     ```bash
+    # 按 ISBN 删除
     python3 delete_book.py --isbn 9787020188284
-    # 或
+
+    # 按书名删除
     python3 delete_book.py --title "棋王 树王 孩子王"
+
+    # 跳过“已购入确认”
+    python3 delete_book.py --isbn 9787020188284 --force
     ```
-    * 若检测到该书有购入记录（购入价格非空，含 0），脚本会先提示并要求你输入 `YES` 才继续删除。
-    * 如需跳过确认可使用：`python3 delete_book.py --isbn <ISBN> --force`
+    * 删除范围：`inventory_auto.csv` + `manual_overrides.csv`（会尽量按 `记录ID` / ISBN / 书名成对清理）。
+    * 若检测到该书有购入记录（`购入价格` 非空，含 `0`），脚本会要求输入 `YES` 后才继续。
+    * 建议删除后执行一次同步（或触发 workflow）并查看 `report_auto.html`，确认报表已更新。
 
 ## 项目结构
 ```

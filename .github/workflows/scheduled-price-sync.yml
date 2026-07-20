@@ -52,4 +52,14 @@ jobs:
             exit 0
           fi
           git commit -m "chore: scheduled price sync"
-          git push
+          branch="$(git rev-parse --abbrev-ref HEAD)"
+          attempts=0
+          until [ "$attempts" -ge 3 ]; do
+            attempts=$((attempts + 1))
+            git pull --rebase origin "$branch" && git push origin "HEAD:$branch" && exit 0
+            echo "Push attempt ${attempts}/3 failed, retrying..."
+            git rebase --abort 2>/dev/null || true
+            sleep "$attempts"
+          done
+          echo "Failed to push after 3 attempts."
+          exit 1

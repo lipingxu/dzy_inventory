@@ -23,8 +23,10 @@ import argparse
 import csv
 import json
 import os
+import ssl
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import webbrowser
@@ -40,6 +42,14 @@ HTML_PATH = REPO_ROOT / "override_editor.html"
 DEFAULT_HEADERS = ["记录ID", "ISBN", "书名", "购入价格", "售出价格", "售出时间", "备注", "处理标签"]
 DEFAULT_WORKFLOW_FILE = "scheduled-price-sync.yml"
 DEFAULT_COMMIT_MESSAGE = "chore: update manual overrides via local editor"
+WORKFLOW_TRIGGER_RETRIES = 3
+WORKFLOW_TRIGGER_TIMEOUT_SECONDS = 20
+
+
+def _is_retryable_network_error(reason: object) -> bool:
+    if isinstance(reason, ssl.SSLEOFError):
+        return True
+    return isinstance(reason, TimeoutError)
 
 
 def _json_response(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> None:
@@ -208,15 +218,29 @@ def _trigger_github_workflow() -> dict:
             "Content-Type": "application/json",
         },
     )
-    try:
-        with urllib.request.urlopen(request) as response:
-            if response.status not in (HTTPStatus.NO_CONTENT, HTTPStatus.CREATED, HTTPStatus.OK):
-                raise RuntimeError(f"触发工作流失败，HTTP {response.status}")
-    except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"触发工作流失败，HTTP {exc.code}: {details}") from exc
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"触发工作流失败：{exc.reason}") from exc
+    for attempt in range(1, WORKFLOW_TRIGGER_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=WORKFLOW_TRIGGER_TIMEOUT_SECONDS) as response:
+                if response.status not in (HTTPStatus.NO_CONTENT, HTTPStatus.CREATED, HTTPStatus.OK):
+                    raise RuntimeError(f"触发工作流失败，HTTP {response.status}")
+                break
+        except urllib.error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="ignore")
+            retryable_status = exc.code in (
+                HTTPStatus.TOO_MANY_REQUESTS,
+                HTTPStatus.BAD_GATEWAY,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                HTTPStatus.GATEWAY_TIMEOUT,
+            )
+            if retryable_status and attempt < WORKFLOW_TRIGGER_RETRIES:
+                time.sleep(attempt)
+                continue
+            raise RuntimeError(f"触发工作流失败，HTTP {exc.code}: {details}") from exc
+        except urllib.error.URLError as exc:
+            if attempt < WORKFLOW_TRIGGER_RETRIES and _is_retryable_network_error(exc.reason):
+                time.sleep(attempt)
+                continue
+            raise RuntimeError(f"触发工作流失败：{exc.reason}") from exc
 
     return {"message": f"已触发 GitHub Actions：{config['workflow_file']} @ {config['branch']}"}
 

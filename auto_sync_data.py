@@ -88,3 +88,4 @@ if __name__ == "__main__":
         print(f"\n🎉 同步成功！报表已刷新 (生成时间: {datetime.now().strftime('%H:%M:%S')})")
     else:
         print("\n❌ 提取失败：未找到书籍数据。")
+        sys.exit(1)

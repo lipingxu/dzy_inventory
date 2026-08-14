@@ -42,7 +42,7 @@ jobs:
           DZY_CURL_COMMAND: ${{ secrets.DZY_CURL_COMMAND }}
 
       - name: Commit and push updates
-        if: always()
+        if: success()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

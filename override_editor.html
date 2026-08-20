@@ -24,6 +24,12 @@
     .panel { padding: 18px; }
     .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
     .search { width: min(320px, 100%); padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; }
+    .category-card { border: 1px solid #e2e8f0; border-radius: 14px; margin-bottom: 14px; overflow: hidden; background: #fff; }
+    .category-card summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 700; color: #0f172a; background: #f8fafc; }
+    .category-card summary::-webkit-details-marker { display: none; }
+    .category-card summary::after { content: "展开"; color: #2563eb; font-size: 0.85rem; }
+    .category-card[open] summary::after { content: "收起"; }
+    .category-desc { font-size: 0.86rem; color: #64748b; font-weight: 500; }
     .table-wrap { overflow: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
     table { width: 100%; border-collapse: collapse; min-width: 980px; table-layout: fixed; }
     th, td { border-bottom: 1px solid #f1f5f9; padding: 10px; text-align: left; vertical-align: top; }
@@ -66,12 +72,7 @@
         <strong id="tableTitle">manual_overrides.csv</strong>
         <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签…">
       </div>
-      <div class="table-wrap">
-        <table id="editorTable">
-          <thead></thead>
-          <tbody></tbody>
-        </table>
-      </div>
+      <div id="categoryPanels"></div>
       <div class="note">说明：本页面编辑的是 <code>manual_overrides.csv</code>。远端 GitHub Actions 只会读取已推送到 GitHub 的内容，所以如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
       <div id="log" class="log">准备就绪。</div>
     </section>
@@ -86,11 +87,16 @@
     };
 
     const logEl = document.getElementById('log');
-    const tableHead = document.querySelector('#editorTable thead');
-    const tableBody = document.querySelector('#editorTable tbody');
+    const categoryPanels = document.getElementById('categoryPanels');
     const tableTitle = document.getElementById('tableTitle');
     const statusBar = document.getElementById('statusBar');
     const searchInput = document.getElementById('searchInput');
+    const categories = [
+      { key: 'processing', title: '待售 / 已看', desc: '最常改的高频区：处理标签为“待售”或“已看”。', open: true },
+      { key: 'holding', title: '其他持有', desc: '已购入但尚未标记待售、已看或已售。', open: true },
+      { key: 'observing', title: '观察', desc: '仅观察行情、未填写购入价的书。', open: false },
+      { key: 'sold', title: '已售出', desc: '已结案，低频查看区，默认收起。', open: false },
+    ];
 
     function log(message) {
       const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
@@ -112,8 +118,17 @@
       `;
     }
 
-    function renderTable() {
-      const headers = state.headers;
+    function classifyRow(row) {
+      const buyPrice = (row['购入价格'] || '').trim();
+      const sellPrice = (row['售出价格'] || '').trim();
+      const tag = (row['处理标签'] || '').trim();
+      if (sellPrice || tag === '已售') return 'sold';
+      if (tag === '待售' || tag === '已看') return 'processing';
+      if (!buyPrice) return 'observing';
+      return 'holding';
+    }
+
+    function buildTableHtml(headers, rows) {
       const getColClass = (header) => {
         if (header === '记录ID') return 'col-id';
         if (header === 'ISBN') return 'col-isbn';
@@ -125,39 +140,70 @@
         if (header === '备注') return 'col-note';
         return '';
       };
-      tableTitle.textContent = `manual_overrides.csv（${state.rows.length} 行）`;
-      tableHead.innerHTML = `
-        <tr>
-          ${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}
-          <th class="col-action">操作</th>
-        </tr>
-      `;
 
+      if (!rows.length) {
+        return `<div class="table-wrap"><table class="editor-table"><tbody><tr><td class="muted">暂无数据。</td></tr></tbody></table></div>`;
+      }
+
+      return `
+        <div class="table-wrap">
+          <table class="editor-table">
+            <thead>
+              <tr>
+                ${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}
+                <th class="col-action">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(({ row, actualIndex }) => `
+                <tr data-row-index="${actualIndex}">
+                  ${headers.map(header => {
+                    const value = escapeHtml(row[header] || '');
+                    const isReadonly = header === '记录ID';
+                    const readonlyAttr = isReadonly ? 'readonly' : '';
+                    const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
+                    return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}></td>`;
+                  }).join('')}
+                  <td class="col-action">
+                    <div class="row-actions">
+                      <button class="danger" data-action="delete" data-row-index="${actualIndex}">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderTable() {
+      const headers = state.headers;
+      tableTitle.textContent = `manual_overrides.csv（${state.rows.length} 行）`;
       const query = state.filterText.trim().toLowerCase();
       const visibleRows = state.rows.filter(row => {
         if (!query) return true;
         return headers.some(header => (row[header] || '').toLowerCase().includes(query));
       });
-
-      tableBody.innerHTML = visibleRows.map((row, filteredIndex) => {
+      const grouped = Object.fromEntries(categories.map(category => [category.key, []]));
+      for (const row of visibleRows) {
         const actualIndex = state.rows.indexOf(row);
-        return `
-          <tr data-row-index="${actualIndex}">
-            ${headers.map(header => {
-              const value = escapeHtml(row[header] || '');
-              const isReadonly = header === '记录ID';
-              const readonlyAttr = isReadonly ? 'readonly' : '';
-              const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
-              return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}></td>`;
-            }).join('')}
-            <td class="col-action">
-              <div class="row-actions">
-                <button class="danger" data-action="delete" data-row-index="${actualIndex}">删除</button>
-              </div>
-            </td>
-          </tr>
-        `;
-      }).join('');
+        grouped[classifyRow(row)].push({ row, actualIndex });
+      }
+      const totalGrouped = Object.fromEntries(categories.map(category => [category.key, 0]));
+      for (const row of state.rows) {
+        totalGrouped[classifyRow(row)] += 1;
+      }
+
+      categoryPanels.innerHTML = categories.map(category => `
+        <details class="category-card" ${category.open ? 'open' : ''}>
+          <summary>
+            <span>${category.title}（${grouped[category.key].length}/${totalGrouped[category.key]} 行）</span>
+            <span class="category-desc">${category.desc}</span>
+          </summary>
+          ${buildTableHtml(headers, grouped[category.key])}
+        </details>
+      `).join('');
     }
 
     function escapeHtml(text) {
@@ -170,7 +216,7 @@
 
     function collectRowsFromDom() {
       const rows = [];
-      document.querySelectorAll('#editorTable tbody tr').forEach((tr) => {
+      document.querySelectorAll('.editor-table tbody tr[data-row-index]').forEach((tr) => {
         const rowIndex = Number(tr.dataset.rowIndex);
         const row = { ...state.rows[rowIndex] };
         tr.querySelectorAll('input[data-field]').forEach((input) => {
@@ -295,7 +341,7 @@
       renderTable();
     });
 
-    tableBody.addEventListener('click', (event) => {
+    categoryPanels.addEventListener('click', (event) => {
       const button = event.target.closest('button[data-action="delete"]');
       if (!button) return;
       deleteRow(Number(button.dataset.rowIndex));

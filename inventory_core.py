@@ -229,6 +229,10 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
     today = datetime.now().strftime('%Y-%m-%d')
     for row in rows:
         merged_row = dict(row)
+        was_sold = (
+            merged_row.get('状态') == '已售'
+            or bool((merged_row.get('售出价格') or '').strip())
+        )
         identity = _row_identity(merged_row)
         override = override_map.get(identity) if identity else None
         if override:
@@ -236,13 +240,20 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 if key in (RECORD_ID_FIELD, 'ISBN'):
                     continue
                 value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
+                if (
+                    key == SOLD_AT_FIELD
+                    and was_sold
+                    and not value
+                    and (merged_row.get(SOLD_AT_FIELD) or '').strip()
+                ):
+                    continue
                 merged_row[key] = value
 
             buy_price = (merged_row.get('购入价格') or '').strip()
             sell_price = (merged_row.get('售出价格') or '').strip()
             sold_at = (merged_row.get(SOLD_AT_FIELD) or '').strip()
             if sell_price:
-                if not sold_at:
+                if not sold_at and not was_sold:
                     merged_row[SOLD_AT_FIELD] = today
                 merged_row['状态'] = '已售'
             elif buy_price and merged_row.get('状态') != '已售':

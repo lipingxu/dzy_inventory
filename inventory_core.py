@@ -627,7 +627,15 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
     ]
     observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
-    table_col_count = 7 + len(custom_headers)
+    collapsed_date_count = 3
+    hidden_price_dates = date_headers[:-collapsed_date_count] if len(date_headers) > collapsed_date_count else []
+    visible_price_dates = date_headers[-collapsed_date_count:] if len(date_headers) > collapsed_date_count else date_headers
+    table_col_count = 6 + len(date_headers) + len(custom_headers)
+
+    def _date_header_html(table_id, date_value, col_idx, hidden=False):
+        d_text = date_value[5:] if len(date_value) > 5 else date_value
+        hidden_class = " history-extra" if hidden else ""
+        return f"<th class='sortable price-date-col{hidden_class}' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{d_text}</th>"
 
     def _table_headers_html(table_id):
         headers_html = [
@@ -635,13 +643,23 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             f"<th class='title-col' onclick=\"sortTable('{table_id}', 1)\">书名</th>",
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 2, 'num')\">购入价</th>",
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 3, 'num')\">最高价</th>",
-            f"<th class='sortable' onclick=\"sortTable('{table_id}', 4, 'num')\">最新价</th>",
-            f"<th class='sortable' onclick=\"sortTable('{table_id}', 5, 'num')\">估算盈亏</th>",
-            f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', 6, 'num')\">7天趋势</th>",
         ]
+        for i, d in enumerate(hidden_price_dates):
+            headers_html.append(_date_header_html(table_id, d, 4+i, hidden=True))
+        visible_start = 4 + len(hidden_price_dates)
+        for i, d in enumerate(visible_price_dates):
+            headers_html.append(_date_header_html(table_id, d, visible_start+i))
+
+        trend_col_idx = 4 + len(date_headers)
+        headers_html.append(
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', {trend_col_idx}, 'num')\">估算盈亏</th>"
+        )
+        headers_html.append(
+            f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', {trend_col_idx+1}, 'num')\">7天趋势</th>"
+        )
         for i, ch in enumerate(custom_headers):
             headers_html.append(
-                f"<th class='sortable' onclick=\"sortTable('{table_id}', {7+i})\">{ch}</th>"
+                f"<th class='sortable' onclick=\"sortTable('{table_id}', {trend_col_idx+2+i})\">{ch}</th>"
             )
         return "".join(headers_html)
 
@@ -686,20 +704,22 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
 
             ps = []
-            daily_items = []
-            for d in date_headers:
+            for i, d in enumerate(date_headers):
                 v = r.get(d, '')
-                daily_items.append(f"<span><b>{d[5:] if len(d) > 5 else d}</b>{('¥' + v) if v else '-'}</span>")
+                classes = []
+                if d in hidden_price_dates:
+                    classes.append('history-extra')
+                if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
+                    classes.append('p-low')
+                class_attr = f"class='{ ' '.join(classes) }'" if classes else ''
+                val = 0
                 if v:
                     try:
-                        ps.append(float(v))
+                        val = float(v)
+                        ps.append(val)
                     except ValueError:
                         pass
-
-            latest_cls = ""
-            if latest_p > 0 and latest_p < max_p:
-                latest_cls = "class='p-low'"
-            row_html += f"<td {latest_cls} data-val='{latest_p}'>{('¥' + r.get(latest_date, '')) if latest_p else '-'}</td>"
+                row_html += f"<td {class_attr} data-val='{val}'>{('¥' + v) if v else '-'}</td>"
 
             est_val = 0
             est_html = "-"
@@ -719,8 +739,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
                 elif trnd_val < 0:
                     trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
-            daily_html = "".join(daily_items)
-            row_html += f"<td class='trend-col' data-val='{trnd_val}'><details class='price-details'><summary>{trnd_html}</summary><div class='price-history'>{daily_html}</div></details></td>"
+            row_html += f"<td class='trend-col' data-val='{trnd_val}'>{trnd_html}</td>"
 
             for ch in custom_headers:
                 row_html += f"<td>{r.get(ch, '-')}</td>"
@@ -783,8 +802,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .search-box {{ padding: 8px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 250px; outline: none; transition: all 0.2s; }}
         .search-box:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
 
+        .price-display-panel {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #64748b; }}
+        .price-display-panel strong {{ color: #0f172a; }}
+        .price-display-panel button {{ border: 1px solid #bfdbfe; background: #eff6ff; color: #2563eb; border-radius: 999px; padding: 8px 14px; font-weight: 700; cursor: pointer; }}
+        .price-display-panel button:hover {{ background: #dbeafe; }}
+
         .table-wrapper {{ overflow-x: auto; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 880px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 920px; }}
         th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #f1f5f9; }}
         th {{ background: #f8fafc; color: #64748b; font-weight: 600; cursor: pointer; position: relative; white-space: nowrap; }}
         th:hover {{ background: #f1f5f9; }}
@@ -793,14 +817,10 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
         
         .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-        .trend-col {{ min-width: 130px; }}
-        .price-details summary {{ cursor: pointer; list-style: none; white-space: nowrap; }}
-        .price-details summary::-webkit-details-marker {{ display: none; }}
-        .price-details summary::after {{ content: " 详情"; color: #3b82f6; font-size: 0.75rem; font-weight: 600; }}
-        .price-details[open] summary::after {{ content: " 收起"; }}
-        .price-history {{ display: grid; grid-template-columns: repeat(2, minmax(70px, 1fr)); gap: 4px 8px; margin-top: 8px; color: #64748b; font-size: 0.78rem; text-align: left; }}
-        .price-history span {{ display: flex; justify-content: space-between; gap: 6px; }}
-        .price-history b {{ color: #94a3b8; font-weight: 600; }}
+        .price-date-col {{ min-width: 78px; }}
+        .trend-col {{ min-width: 105px; }}
+        .history-extra {{ display: none; }}
+        body.show-full-history .history-extra {{ display: table-cell; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
         .sb {{ background: #fee2e2; color: #ef4444; }}
         .up {{ background: #fee2e2; color: #ef4444; }}
@@ -845,6 +865,11 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     </div>
 
     <div id="chart-container"></div>
+
+    <div class="price-display-panel">
+        <div><strong>价格列显示</strong>：默认显示最近 3 天；需要复盘时可展开完整最近 7 天。</div>
+        <button type="button" id="togglePriceHistory" onclick="togglePriceHistory()">展开最近7天价格</button>
+    </div>
 
     <details class="details-card">
         <summary>
@@ -973,7 +998,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             }});
         }}
 
-        // 3. 排序逻辑
+        // 3. 价格列展开/收起
+        function togglePriceHistory() {{
+            const expanded = document.body.classList.toggle('show-full-history');
+            document.getElementById('togglePriceHistory').textContent = expanded ? '收起为最近3天' : '展开最近7天价格';
+        }}
+
+        // 4. 排序逻辑
         let sortOrder = {{}};
         function sortTable(tableId, colIdx, type) {{
             const table = document.getElementById(tableId);

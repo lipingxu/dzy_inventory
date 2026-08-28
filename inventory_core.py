@@ -636,7 +636,11 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     table_col_count = 6 + len(date_headers) + len(display_custom_headers)
 
     def _date_header_html(table_id, date_value, col_idx):
-        d_text = date_value[5:] if len(date_value) > 5 else date_value
+        try:
+            month, day = date_value[5:].split('-', 1)
+            d_text = f"{int(month)}/{int(day)}"
+        except (ValueError, IndexError):
+            d_text = date_value
         return f"<th class='sortable price-date-col' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{d_text}</th>"
 
     def _custom_header_html(table_id, col_idx, header_name):
@@ -818,7 +822,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
         
         .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-        .price-date-col {{ min-width: 78px; }}
+        .price-date-col {{ min-width: 56px; padding-left: 7px; padding-right: 7px; }}
         .trend-col {{ min-width: 105px; }}
         .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}

@@ -627,7 +627,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
     ]
     observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
-    table_col_count = 6 + len(date_headers) + len(custom_headers)
+    table_col_count = 7 + len(custom_headers)
 
     def _table_headers_html(table_id):
         headers_html = [
@@ -635,21 +635,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             f"<th class='title-col' onclick=\"sortTable('{table_id}', 1)\">书名</th>",
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 2, 'num')\">购入价</th>",
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 3, 'num')\">最高价</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 4, 'num')\">最新价</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 5, 'num')\">估算盈亏</th>",
+            f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', 6, 'num')\">7天趋势</th>",
         ]
-        for i, d in enumerate(date_headers):
-            d_text = d[5:] if len(d) > 5 else d
-            headers_html.append(
-                f"<th class='sortable' onclick=\"sortTable('{table_id}', {4+i}, 'num')\">{d_text}</th>"
-            )
-        headers_html.append(
-            f"<th class='sortable' onclick=\"sortTable('{table_id}', {4+len(date_headers)}, 'num')\">估算盈亏</th>"
-        )
-        headers_html.append(
-            f"<th class='sortable' onclick=\"sortTable('{table_id}', {5+len(date_headers)}, 'num')\">7天趋势</th>"
-        )
         for i, ch in enumerate(custom_headers):
             headers_html.append(
-                f"<th class='sortable' onclick=\"sortTable('{table_id}', {6+len(date_headers)+i})\">{ch}</th>"
+                f"<th class='sortable' onclick=\"sortTable('{table_id}', {7+i})\">{ch}</th>"
             )
         return "".join(headers_html)
 
@@ -694,17 +686,20 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
 
             ps = []
-            for i, d in enumerate(date_headers):
+            daily_items = []
+            for d in date_headers:
                 v = r.get(d, '')
-                cls = ""
-                if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
-                    cls = "class='p-low'"
-                row_html += f"<td {cls}>{('¥' + v) if v else '-'}</td>"
+                daily_items.append(f"<span><b>{d[5:] if len(d) > 5 else d}</b>{('¥' + v) if v else '-'}</span>")
                 if v:
                     try:
                         ps.append(float(v))
                     except ValueError:
                         pass
+
+            latest_cls = ""
+            if latest_p > 0 and latest_p < max_p:
+                latest_cls = "class='p-low'"
+            row_html += f"<td {latest_cls} data-val='{latest_p}'>{('¥' + r.get(latest_date, '')) if latest_p else '-'}</td>"
 
             est_val = 0
             est_html = "-"
@@ -724,7 +719,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
                 elif trnd_val < 0:
                     trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
-            row_html += f"<td data-val='{trnd_val}'>{trnd_html}</td>"
+            daily_html = "".join(daily_items)
+            row_html += f"<td class='trend-col' data-val='{trnd_val}'><details class='price-details'><summary>{trnd_html}</summary><div class='price-history'>{daily_html}</div></details></td>"
 
             for ch in custom_headers:
                 row_html += f"<td>{r.get(ch, '-')}</td>"
@@ -788,7 +784,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .search-box:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
 
         .table-wrapper {{ overflow-x: auto; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 1000px; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 880px; }}
         th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #f1f5f9; }}
         th {{ background: #f8fafc; color: #64748b; font-weight: 600; cursor: pointer; position: relative; white-space: nowrap; }}
         th:hover {{ background: #f1f5f9; }}
@@ -797,6 +793,14 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
         
         .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .trend-col {{ min-width: 130px; }}
+        .price-details summary {{ cursor: pointer; list-style: none; white-space: nowrap; }}
+        .price-details summary::-webkit-details-marker {{ display: none; }}
+        .price-details summary::after {{ content: " 详情"; color: #3b82f6; font-size: 0.75rem; font-weight: 600; }}
+        .price-details[open] summary::after {{ content: " 收起"; }}
+        .price-history {{ display: grid; grid-template-columns: repeat(2, minmax(70px, 1fr)); gap: 4px 8px; margin-top: 8px; color: #64748b; font-size: 0.78rem; text-align: left; }}
+        .price-history span {{ display: flex; justify-content: space-between; gap: 6px; }}
+        .price-history b {{ color: #94a3b8; font-weight: 600; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
         .sb {{ background: #fee2e2; color: #ef4444; }}
         .up {{ background: #fee2e2; color: #ef4444; }}

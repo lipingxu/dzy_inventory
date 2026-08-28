@@ -5,6 +5,7 @@ inventory_core.py — 图书资产管理系统共享核心逻辑
 """
 
 import csv
+import html as html_lib
 import json
 import logging
 import os
@@ -521,6 +522,11 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     fixed_fields = FIXED_HEADERS
     date_headers = [h for h in headers if _is_date_column(h)]
     custom_headers = [h for h in headers if h not in fixed_fields and h not in date_headers]
+    display_custom_headers = [h for h in custom_headers if h not in {'处理标签', '备注'}]
+    if '处理标签' in custom_headers:
+        display_custom_headers.append('处理标签')
+    if '备注' in custom_headers:
+        display_custom_headers.append('备注')
 
     last_checked_text = ""
     try:
@@ -627,15 +633,17 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
     ]
     observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
-    collapsed_date_count = 3
-    hidden_price_dates = date_headers[:-collapsed_date_count] if len(date_headers) > collapsed_date_count else []
-    visible_price_dates = date_headers[-collapsed_date_count:] if len(date_headers) > collapsed_date_count else date_headers
-    table_col_count = 6 + len(date_headers) + len(custom_headers)
+    table_col_count = 6 + len(date_headers) + len(display_custom_headers)
 
-    def _date_header_html(table_id, date_value, col_idx, hidden=False):
+    def _date_header_html(table_id, date_value, col_idx):
         d_text = date_value[5:] if len(date_value) > 5 else date_value
-        hidden_class = " history-extra" if hidden else ""
-        return f"<th class='sortable price-date-col{hidden_class}' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{d_text}</th>"
+        return f"<th class='sortable price-date-col' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{d_text}</th>"
+
+    def _custom_header_html(table_id, col_idx, header_name):
+        display_name = '状态' if header_name == '处理标签' else header_name
+        th_class = "col-status" if header_name == '处理标签' else ("col-note" if header_name == '备注' else "")
+        class_attr = f" class='sortable {th_class}'" if th_class else " class='sortable'"
+        return f"<th{class_attr} onclick=\"sortTable('{table_id}', {col_idx})\">{display_name}</th>"
 
     def _table_headers_html(table_id):
         headers_html = [
@@ -644,11 +652,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 2, 'num')\">购入价</th>",
             f"<th class='sortable' onclick=\"sortTable('{table_id}', 3, 'num')\">最高价</th>",
         ]
-        for i, d in enumerate(hidden_price_dates):
-            headers_html.append(_date_header_html(table_id, d, 4+i, hidden=True))
-        visible_start = 4 + len(hidden_price_dates)
-        for i, d in enumerate(visible_price_dates):
-            headers_html.append(_date_header_html(table_id, d, visible_start+i))
+        for i, d in enumerate(date_headers):
+            headers_html.append(_date_header_html(table_id, d, 4+i))
 
         trend_col_idx = 4 + len(date_headers)
         headers_html.append(
@@ -657,10 +662,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         headers_html.append(
             f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', {trend_col_idx+1}, 'num')\">7天趋势</th>"
         )
-        for i, ch in enumerate(custom_headers):
-            headers_html.append(
-                f"<th class='sortable' onclick=\"sortTable('{table_id}', {trend_col_idx+2+i})\">{ch}</th>"
-            )
+        for i, ch in enumerate(display_custom_headers):
+            headers_html.append(_custom_header_html(table_id, trend_col_idx + 2 + i, ch))
         return "".join(headers_html)
 
     def _build_inventory_rows_html(target_rows):
@@ -707,8 +710,6 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             for i, d in enumerate(date_headers):
                 v = r.get(d, '')
                 classes = []
-                if d in hidden_price_dates:
-                    classes.append('history-extra')
                 if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
                     classes.append('p-low')
                 class_attr = f"class='{ ' '.join(classes) }'" if classes else ''
@@ -741,8 +742,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
             row_html += f"<td class='trend-col' data-val='{trnd_val}'>{trnd_html}</td>"
 
-            for ch in custom_headers:
-                row_html += f"<td>{r.get(ch, '-')}</td>"
+            for ch in display_custom_headers:
+                td_class = "col-status" if ch == '处理标签' else ("col-note" if ch == '备注' else "")
+                class_attr = f" class='{td_class}'" if td_class else ""
+                value = r.get(ch, '-') or '-'
+                value_html = html_lib.escape(value)
+                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'处理标签', '备注'} and value != '-' else ""
+                row_html += f"<td{class_attr}{title_attr}>{value_html}</td>"
 
             row_html += "</tr>"
             html_rows.append(row_html)
@@ -802,11 +808,6 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .search-box {{ padding: 8px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 250px; outline: none; transition: all 0.2s; }}
         .search-box:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
 
-        .price-display-panel {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #64748b; }}
-        .price-display-panel strong {{ color: #0f172a; }}
-        .price-display-panel button {{ border: 1px solid #bfdbfe; background: #eff6ff; color: #2563eb; border-radius: 999px; padding: 8px 14px; font-weight: 700; cursor: pointer; }}
-        .price-display-panel button:hover {{ background: #dbeafe; }}
-
         .table-wrapper {{ overflow-x: auto; }}
         table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 920px; }}
         th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #f1f5f9; }}
@@ -819,8 +820,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
         .price-date-col {{ min-width: 78px; }}
         .trend-col {{ min-width: 105px; }}
-        .history-extra {{ display: none; }}
-        body.show-full-history .history-extra {{ display: table-cell; }}
+        .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
         .sb {{ background: #fee2e2; color: #ef4444; }}
         .up {{ background: #fee2e2; color: #ef4444; }}
@@ -865,11 +866,6 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     </div>
 
     <div id="chart-container"></div>
-
-    <div class="price-display-panel">
-        <div><strong>价格列显示</strong>：默认显示最近 3 天；需要复盘时可展开完整最近 7 天。</div>
-        <button type="button" id="togglePriceHistory" onclick="togglePriceHistory()">展开最近7天价格</button>
-    </div>
 
     <details class="details-card">
         <summary>
@@ -945,7 +941,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     <thead>
                         <tr>
                             <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>售出时间</th><th>净利润</th>
-                            {"".join([f"<th>{ch}</th>" for ch in custom_headers])}
+                            {"".join([f"<th class='{'col-status' if ch == '处理标签' else ('col-note' if ch == '备注' else '')}'>{'状态' if ch == '处理标签' else ch}</th>" for ch in display_custom_headers])}
                         </tr>
                     </thead>
                     <tbody>"""
@@ -961,8 +957,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                 pass
         html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
         html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
-        for ch in custom_headers:
-            html += f"<td>{r.get(ch, '-')}</td>"
+        for ch in display_custom_headers:
+            td_class = "col-status" if ch == '处理标签' else ("col-note" if ch == '备注' else "")
+            class_attr = f" class='{td_class}'" if td_class else ""
+            value = r.get(ch, '-') or '-'
+            value_html = html_lib.escape(value)
+            title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'处理标签', '备注'} and value != '-' else ""
+            html += f"<td{class_attr}{title_attr}>{value_html}</td>"
         html += "</tr>"
 
     html += f"""</tbody></table></div></div></details>
@@ -998,13 +999,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             }});
         }}
 
-        // 3. 价格列展开/收起
-        function togglePriceHistory() {{
-            const expanded = document.body.classList.toggle('show-full-history');
-            document.getElementById('togglePriceHistory').textContent = expanded ? '收起为最近3天' : '展开最近7天价格';
-        }}
-
-        // 4. 排序逻辑
+        // 3. 排序逻辑
         let sortOrder = {{}};
         function sortTable(tableId, colIdx, type) {{
             const table = document.getElementById(tableId);

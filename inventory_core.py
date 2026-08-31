@@ -330,6 +330,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 merged_row['售出价格'] = ''
                 merged_row[SOLD_AT_FIELD] = ''
                 merged_row['处理标签'] = final_state
+                merged_rows.append(merged_row)
                 continue
 
             buy_price = (merged_row.get('购入价格') or '').strip()

@@ -547,6 +547,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         display_custom_headers.append('处理标签')
     if '备注' in custom_headers:
         display_custom_headers.append('备注')
+    report_tail_headers = ['状态'] + display_custom_headers
 
     last_checked_text = ""
     try:
@@ -665,7 +666,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
     ]
     observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
-    table_col_count = 6 + len(date_headers) + len(display_custom_headers)
+    table_col_count = 6 + len(date_headers) + len(report_tail_headers)
 
     def _date_header_html(table_id, date_value, col_idx):
         try:
@@ -676,8 +677,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         return f"<th class='sortable price-date-col' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{d_text}</th>"
 
     def _custom_header_html(table_id, col_idx, header_name):
-        display_name = '状态' if header_name == '处理标签' else header_name
-        th_class = "col-status" if header_name == '处理标签' else ("col-note" if header_name == '备注' else "")
+        display_name = header_name
+        th_class = "col-status" if header_name in {'状态', '处理标签'} else ("col-note" if header_name == '备注' else "")
         class_attr = f" class='sortable {th_class}'" if th_class else " class='sortable'"
         return f"<th{class_attr} onclick=\"sortTable('{table_id}', {col_idx})\">{display_name}</th>"
 
@@ -698,7 +699,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         headers_html.append(
             f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', {trend_col_idx+1}, 'num')\">7天趋势</th>"
         )
-        for i, ch in enumerate(display_custom_headers):
+        for i, ch in enumerate(report_tail_headers):
             headers_html.append(_custom_header_html(table_id, trend_col_idx + 2 + i, ch))
         return "".join(headers_html)
 
@@ -778,12 +779,12 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
             row_html += f"<td class='trend-col' data-val='{trnd_val}'>{trnd_html}</td>"
 
-            for ch in display_custom_headers:
-                td_class = "col-status" if ch == '处理标签' else ("col-note" if ch == '备注' else "")
+            for ch in report_tail_headers:
+                td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
                 class_attr = f" class='{td_class}'" if td_class else ""
                 value = r.get(ch, '-') or '-'
                 value_html = html_lib.escape(value)
-                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'处理标签', '备注'} and value != '-' else ""
+                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
                 row_html += f"<td{class_attr}{title_attr}>{value_html}</td>"
 
             row_html += "</tr>"
@@ -979,7 +980,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     <thead>
                         <tr>
                             <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>售出时间</th><th>净利润</th>
-                            {"".join([f"<th class='{'col-status' if ch == '处理标签' else ('col-note' if ch == '备注' else '')}'>{'状态' if ch == '处理标签' else ch}</th>" for ch in display_custom_headers])}
+                            {"".join([f"<th class='{'col-status' if ch in {'状态', '处理标签'} else ('col-note' if ch == '备注' else '')}'>{ch}</th>" for ch in report_tail_headers])}
                         </tr>
                     </thead>
                     <tbody>"""
@@ -995,12 +996,12 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                 pass
         html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
         html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
-        for ch in display_custom_headers:
-            td_class = "col-status" if ch == '处理标签' else ("col-note" if ch == '备注' else "")
+        for ch in report_tail_headers:
+            td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
             class_attr = f" class='{td_class}'" if td_class else ""
             value = r.get(ch, '-') or '-'
             value_html = html_lib.escape(value)
-            title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'处理标签', '备注'} and value != '-' else ""
+            title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
             html += f"<td{class_attr}{title_attr}>{value_html}</td>"
         html += "</tr>"
 

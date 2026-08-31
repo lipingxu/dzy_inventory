@@ -17,7 +17,6 @@
     .secondary { background: #e2e8f0; color: #0f172a; }
     .success { background: #16a34a; color: #fff; }
     .warning { background: #f59e0b; color: #fff; }
-    .danger { background: #ef4444; color: #fff; }
     button:disabled { opacity: 0.6; cursor: not-allowed; }
     .status-bar { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
     .chip { padding: 8px 12px; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 0.88rem; }
@@ -35,17 +34,18 @@
     th, td { border-bottom: 1px solid #f1f5f9; padding: 10px; text-align: left; vertical-align: top; }
     th { position: sticky; top: 0; background: #f8fafc; color: #475569; z-index: 1; }
     tr:nth-child(even) td { background: #fcfdff; }
-    input[type="text"] { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; }
+    input[type="text"], select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; background: #fff; }
     input[readonly] { background: #f8fafc; color: #64748b; }
+    tr.row-modified td { background: #fffbeb !important; }
+    tr.row-modified td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+    tr.row-modified input, tr.row-modified select { border-color: #fbbf24; background: #fffef7; }
     th.col-id, td.col-id { width: 130px; }
     th.col-isbn, td.col-isbn { width: 170px; }
     th.col-buy, td.col-buy, th.col-sell, td.col-sell { width: 100px; }
     th.col-sold-at, td.col-sold-at { width: 120px; }
     th.col-tag, td.col-tag { width: 110px; }
-    th.col-action, td.col-action { width: 88px; }
     th.col-title, td.col-title { width: 320px; }
     th.col-note, td.col-note { width: auto; }
-    .row-actions { display: flex; gap: 6px; }
     .log { margin-top: 16px; padding: 12px 14px; background: #0f172a; color: #e2e8f0; border-radius: 12px; min-height: 72px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
     .note { margin-top: 10px; font-size: 0.9rem; color: #64748b; }
     .pill-ok { color: #166534; border-color: #bbf7d0; background: #f0fdf4; }
@@ -62,7 +62,6 @@
         <button class="secondary" id="commitBtn">提交并推送 override</button>
         <button class="warning" id="triggerBtn">触发 GitHub 同步</button>
         <button class="success" id="saveSyncBtn">保存 → 推送 → 触发同步</button>
-        <button class="secondary" id="addRowBtn">新增一行</button>
       </div>
       <div class="status-bar" id="statusBar"></div>
     </section>
@@ -73,7 +72,7 @@
         <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签、赠送状态…">
       </div>
       <div id="categoryPanels"></div>
-      <div class="note">说明：本页面编辑的是 <code>manual_overrides.csv</code>。远端 GitHub Actions 只会读取已推送到 GitHub 的内容，所以如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
+      <div class="note">说明：日常只需改“处理标签”和价格，状态通常保持“自动判断”即可。状态与处理标签使用下拉选项可避免输入错误。浅黄色行表示本次打开后已编辑、尚未保存的内容；远端 GitHub Actions 只会读取已推送到 GitHub 的内容，如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
       <div id="log" class="log">准备就绪。</div>
     </section>
   </div>
@@ -84,7 +83,11 @@
       rows: [],
       config: {},
       filterText: '',
+      originalRows: new Map(),
     };
+
+    const statusOptions = ['', '持有', '未持有', '已售', '已赠送', '已丢弃', '已移除'];
+    const tagOptions = ['', '待售', '已看', '观察', '已赠送', '已丢弃'];
 
     const logEl = document.getElementById('log');
     const categoryPanels = document.getElementById('categoryPanels');
@@ -150,32 +153,41 @@
         return `<div class="table-wrap"><table class="editor-table"><tbody><tr><td class="muted">暂无数据。</td></tr></tbody></table></div>`;
       }
 
+      const selectHtml = (header, value) => {
+        const configuredOptions = header === '状态' ? statusOptions : tagOptions;
+        const options = configuredOptions.includes(value) ? configuredOptions : [value, ...configuredOptions];
+        const optionHtml = options.map(option => {
+          const label = option ? (configuredOptions.includes(option) ? option : `${option}（当前值）`) : '自动判断';
+          return `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${label}</option>`;
+        }).join('');
+        return `<select data-field="${header}">${optionHtml}</select>`;
+      };
+
       return `
         <div class="table-wrap">
           <table class="editor-table">
             <thead>
-              <tr>
-                ${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}
-                <th class="col-action">操作</th>
-              </tr>
+              <tr>${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}</tr>
             </thead>
             <tbody>
-              ${rows.map(({ row, actualIndex }) => `
-                <tr data-row-index="${actualIndex}">
-                  ${headers.map(header => {
-                    const value = escapeHtml(row[header] || '');
-                    const isReadonly = header === '记录ID';
-                    const readonlyAttr = isReadonly ? 'readonly' : '';
-                    const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
-                    return `<td class="${getColClass(header)}"><input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}></td>`;
-                  }).join('')}
-                  <td class="col-action">
-                    <div class="row-actions">
-                      <button class="danger" data-action="delete" data-row-index="${actualIndex}">删除</button>
-                    </div>
-                  </td>
-                </tr>
-              `).join('')}
+              ${rows.map(({ row, actualIndex }) => {
+                const modifiedClass = isModifiedRow(row) ? 'row-modified' : '';
+                return `
+                  <tr class="${modifiedClass}" data-row-index="${actualIndex}">
+                    ${headers.map(header => {
+                      const rawValue = row[header] || '';
+                      const value = escapeHtml(rawValue);
+                      const isReadonly = header === '记录ID';
+                      const readonlyAttr = isReadonly ? 'readonly' : '';
+                      const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
+                      const control = header === '状态' || header === '处理标签'
+                        ? selectHtml(header, rawValue)
+                        : `<input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}>`;
+                      return `<td class="${getColClass(header)}">${control}</td>`;
+                    }).join('')}
+                  </tr>
+                `;
+              }).join('')}
             </tbody>
           </table>
         </div>
@@ -211,6 +223,15 @@
       `).join('');
     }
 
+    function rowKey(row) {
+      return row['记录ID'] || row['ISBN'] || row['书名'] || '';
+    }
+
+    function isModifiedRow(row) {
+      const original = state.originalRows.get(rowKey(row));
+      return !original || state.headers.some(header => (row[header] || '') !== (original[header] || ''));
+    }
+
     function escapeHtml(text) {
       return text
         .replaceAll('&', '&amp;')
@@ -224,8 +245,8 @@
       document.querySelectorAll('.editor-table tbody tr[data-row-index]').forEach((tr) => {
         const rowIndex = Number(tr.dataset.rowIndex);
         const row = { ...state.rows[rowIndex] };
-        tr.querySelectorAll('input[data-field]').forEach((input) => {
-          row[input.dataset.field] = input.value;
+        tr.querySelectorAll('input[data-field], select[data-field]').forEach((control) => {
+          row[control.dataset.field] = control.value;
         });
         rows.push([rowIndex, row]);
       });
@@ -252,6 +273,7 @@
       const data = await api('/api/data');
       state.headers = normalizeHeaders(data.headers);
       state.rows = data.rows || [];
+      state.originalRows = new Map(state.rows.map(row => [rowKey(row), { ...row }]));
       state.config = data.config || {};
       renderStatusBar();
       renderTable();
@@ -294,26 +316,6 @@
       await loadData();
     }
 
-    function addRow() {
-      const row = Object.fromEntries(state.headers.map(header => [header, '']));
-      state.rows.unshift(row);
-      renderStatusBar();
-      renderTable();
-      log('已新增一行，请填写后保存。');
-    }
-
-    function deleteRow(rowIndex) {
-      const row = state.rows[rowIndex] || {};
-      const title = row['书名'] || row['ISBN'] || '该行';
-      if (!window.confirm(`确认删除这一行吗？\n${title}`)) {
-        return;
-      }
-      state.rows.splice(rowIndex, 1);
-      renderStatusBar();
-      renderTable();
-      log(`已从编辑器移除：${title}`);
-    }
-
     function setBusy(busy) {
       document.querySelectorAll('button').forEach(btn => btn.disabled = busy);
     }
@@ -338,18 +340,20 @@
       try { await savePublishSync(); } catch (err) { log(`保存并同步失败：${err.message}`); } finally { setBusy(false); }
     });
 
-    document.getElementById('addRowBtn').addEventListener('click', addRow);
-
     searchInput.addEventListener('input', (event) => {
       collectRowsFromDom();
       state.filterText = event.target.value || '';
       renderTable();
     });
 
-    categoryPanels.addEventListener('click', (event) => {
-      const button = event.target.closest('button[data-action="delete"]');
-      if (!button) return;
-      deleteRow(Number(button.dataset.rowIndex));
+    categoryPanels.addEventListener('input', (event) => {
+      if (!event.target.matches('input[data-field], select[data-field]')) return;
+      const tr = event.target.closest('tr[data-row-index]');
+      const row = { ...state.rows[Number(tr.dataset.rowIndex)] };
+      tr.querySelectorAll('[data-field]').forEach(control => {
+        row[control.dataset.field] = control.value;
+      });
+      tr.classList.toggle('row-modified', isModifiedRow(row));
     });
 
     loadData().catch(err => {

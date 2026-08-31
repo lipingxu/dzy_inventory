@@ -293,6 +293,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
             override_map.setdefault(identity, manual_row)
 
     merged_rows = []
+    matched_manual_ids = set()
     today = datetime.now().strftime('%Y-%m-%d')
     for row in rows:
         merged_row = dict(row)
@@ -307,6 +308,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 override = candidate
                 break
         if override:
+            matched_manual_ids.add(id(override))
             for key, raw_value in override.items():
                 if key in (RECORD_ID_FIELD, 'ISBN'):
                     continue
@@ -345,6 +347,40 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 merged_row[SOLD_AT_FIELD] = ''
                 merged_row['状态'] = '未持有'
 
+        merged_rows.append(merged_row)
+
+    # manual 中可能保留了已离开上游观察列表的历史购入记录；这些记录仍需进入主表和报表。
+    for manual_row in manual_rows:
+        if id(manual_row) in matched_manual_ids:
+            continue
+        merged_row = {header: '' for header in merged_headers}
+        for key, raw_value in manual_row.items():
+            if key not in merged_headers:
+                continue
+            merged_row[key] = (
+                raw_value.strip()
+                if isinstance(raw_value, str)
+                else str(raw_value).strip() if raw_value is not None else ''
+            )
+        if not (merged_row.get(RECORD_ID_FIELD) or '').strip():
+            merged_row[RECORD_ID_FIELD] = _generate_record_id()
+        merged_row['ISBN'] = _format_isbn_for_csv(merged_row.get('ISBN'))
+
+        state_value = (merged_row.get('状态') or '').strip()
+        tag_value = (merged_row.get('处理标签') or '').strip()
+        if state_value in {GIFTED_STATE, DISCARDED_STATE} or tag_value in {GIFTED_STATE, DISCARDED_STATE}:
+            final_state = GIFTED_STATE if state_value == GIFTED_STATE or tag_value == GIFTED_STATE else DISCARDED_STATE
+            merged_row['状态'] = final_state
+            merged_row['售出价格'] = ''
+            merged_row[SOLD_AT_FIELD] = ''
+            merged_row['处理标签'] = final_state
+        elif (merged_row.get('售出价格') or '').strip():
+            merged_row['状态'] = '已售'
+            merged_row['处理标签'] = '已售'
+        elif (merged_row.get('购入价格') or '').strip():
+            merged_row['状态'] = '持有'
+        else:
+            merged_row['状态'] = '未持有'
         merged_rows.append(merged_row)
 
     return merged_headers, merged_rows
@@ -630,7 +666,6 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     sold_rows = [r for r in rows if r.get('状态') == '已售']
     gifted_rows = [r for r in rows if r.get('状态') == GIFTED_STATE]
     discarded_rows = [r for r in rows if r.get('状态') == DISCARDED_STATE]
-    removed_rows = [r for r in rows if r.get('状态') == '已移除']
 
     # 1. 计算核心指标
     purchased_rows = [r for r in inventory_rows if r.get('状态') == '持有']
@@ -969,6 +1004,24 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         </div>
     </div>
 
+    <details class="details-card">
+        <summary>
+            <span>📦 购入 / 处置统计（6 项）</span>
+            <span class="details-hint">查看累计购入、当前持有、已售出、已赠送、已丢弃等数量</span>
+        </summary>
+        <div class="details-body">
+            <div class="summary-box" style="margin: 18px 0 0;">
+                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已赠送</div><div class="card-val">{len(gifted_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已丢弃</div><div class="card-val">{len(discarded_rows)} 本</div></div>
+                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
+            </div>
+            <p class="details-note">说明：累计购入按“购入价格已填写”统计；已赠送和已丢弃都不计卖出收入，但会保留购入成本并计入已实现损失。“已移除”仅用于内部识别上游不再返回的观察记录，不再作为业务统计项展示。</p>
+        </div>
+    </details>
+
     <div id="chart-container"></div>
 
     <details class="details-card">
@@ -988,17 +1041,26 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         </div>
     </details>
 
-    <div class="section">
-        <div class="section-header">
-            <h2>📚 当前库存（{len(purchased_rows)} 本）</h2>
-            <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
+    <details class="details-card" open>
+        <summary>
+            <span>📚 当前库存（{len(purchased_rows)} 本）</span>
+            <span class="details-hint">当前持有的全部书籍，可收起以查看下方板块</span>
+        </summary>
+        <div class="details-body">
+            <div class="section-header" style="margin-top:18px;">
+                <span></span>
+                <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
+            </div>
+            <div class="table-wrapper">
+                <table id="inventory-table">
+                    <thead>
+                        <tr>{inventory_table_headers}</tr>
+                    </thead>
+                    <tbody>{inventory_rows_html}</tbody>
+                </table>
+            </div>
         </div>
-        <div class="table-wrapper">
-            <table id="inventory-table">
-                <thead>
-                    <tr>{inventory_table_headers}</tr>
-                </thead>
-                <tbody>{inventory_rows_html}</tbody></table></div></div>
+    </details>
 
     <details class="details-card">
         <summary>
@@ -1014,25 +1076,6 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     <tbody>{observing_rows_html}</tbody>
                 </table>
             </div>
-        </div>
-    </details>
-
-    <details class="details-card">
-        <summary>
-            <span>📦 购入 / 处置统计（7 项）</span>
-            <span class="details-hint">查看累计购入、当前持有、已售出、已赠送、已丢弃等数量</span>
-        </summary>
-        <div class="details-body">
-            <div class="summary-box" style="margin: 18px 0 0;">
-                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
-                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已赠送</div><div class="card-val">{len(gifted_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已丢弃</div><div class="card-val">{len(discarded_rows)} 本</div></div>
-                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
-                <div class="card"><div class="card-label">已移除</div><div class="card-val">{len(removed_rows)} 本</div></div>
-            </div>
-            <p class="details-note">说明：累计购入按“购入价格已填写”统计；已赠送和已丢弃都不计卖出收入，但会保留购入成本并计入已实现损失。</p>
         </div>
     </details>
 

@@ -70,7 +70,7 @@
     <section class="panel">
       <div class="panel-head">
         <strong id="tableTitle">manual_overrides.csv</strong>
-        <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签…">
+        <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签、赠送状态…">
       </div>
       <div id="categoryPanels"></div>
       <div class="note">说明：本页面编辑的是 <code>manual_overrides.csv</code>。远端 GitHub Actions 只会读取已推送到 GitHub 的内容，所以如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
@@ -93,8 +93,10 @@
     const searchInput = document.getElementById('searchInput');
     const categories = [
       { key: 'processing', title: '待售 / 已看', desc: '最常改的高频区：处理标签为“待售”或“已看”。', open: true },
-      { key: 'holding', title: '其他持有', desc: '已购入但尚未标记待售、已看或已售。', open: true },
+      { key: 'holding', title: '其他持有', desc: '已购入但尚未标记待售、已看、已赠送、已丢弃或已售。', open: true },
       { key: 'observing', title: '观察', desc: '仅观察行情、未填写购入价的书。', open: false },
+      { key: 'gifted', title: '已赠送', desc: '已送给别人，不算卖出，但仍保留购入成本。', open: false },
+      { key: 'discarded', title: '已丢弃', desc: '已损坏/废弃，不算卖出，但需保留购入成本并计入损失。', open: false },
       { key: 'sold', title: '已售出', desc: '已结案，低频查看区，默认收起。', open: false },
     ];
 
@@ -122,7 +124,10 @@
       const buyPrice = (row['购入价格'] || '').trim();
       const sellPrice = (row['售出价格'] || '').trim();
       const tag = (row['处理标签'] || '').trim();
-      if (sellPrice || tag === '已售') return 'sold';
+      const status = (row['状态'] || '').trim();
+      if (sellPrice || tag === '已售' || status === '已售') return 'sold';
+      if (tag === '已赠送' || status === '已赠送') return 'gifted';
+      if (tag === '已丢弃' || status === '已丢弃') return 'discarded';
       if (tag === '待售' || tag === '已看') return 'processing';
       if (!buyPrice) return 'observing';
       return 'holding';

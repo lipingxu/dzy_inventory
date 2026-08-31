@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 RECORD_ID_FIELD = '记录ID'
 SOLD_AT_FIELD = '售出时间'
+GIFTED_STATE = '已赠送'
+DISCARDED_STATE = '已丢弃'
+FINAL_STATES = {'持有', '未持有', '已售', GIFTED_STATE, DISCARDED_STATE, '已移除'}
 FIXED_HEADERS = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', SOLD_AT_FIELD, '历史最高价']
 BACKUP_DIR = "backups"
 MAX_BACKUPS = 30
@@ -141,7 +144,7 @@ def load_manual_overrides(overrides_path='manual_overrides.csv'):
 
 def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
     """同步手工覆盖文件：初始化、补新书、并保留人工字段。"""
-    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '购入价格', '售出价格', SOLD_AT_FIELD, '备注']
+    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', SOLD_AT_FIELD, '处理标签', '备注']
 
     existing_headers, existing_rows = load_manual_overrides(overrides_path)
     extra_headers = [h for h in existing_headers if h not in base_headers]
@@ -178,9 +181,11 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
                 # manual_overrides 作为人工主数据源：已有行按人工值原样保留（包括空值）
                 out[h] = (existing.get(h) or '').strip()
         else:
+            out['状态'] = (source.get('状态') or '').strip()
             out['购入价格'] = (source.get('购入价格') or '').strip()
             out['售出价格'] = (source.get('售出价格') or '').strip()
             out[SOLD_AT_FIELD] = (source.get(SOLD_AT_FIELD) or '').strip()
+            out['处理标签'] = (source.get('处理标签') or '').strip()
             out['备注'] = (source.get('备注') or '').strip()
             for h in extra_headers:
                 out[h] = (source.get(h) or '').strip()
@@ -249,6 +254,16 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 ):
                     continue
                 merged_row[key] = value
+
+            state_value = (merged_row.get('状态') or '').strip()
+            tag_value = (merged_row.get('处理标签') or '').strip()
+            if state_value in {GIFTED_STATE, DISCARDED_STATE} or tag_value in {GIFTED_STATE, DISCARDED_STATE}:
+                final_state = GIFTED_STATE if state_value == GIFTED_STATE or tag_value == GIFTED_STATE else DISCARDED_STATE
+                merged_row['状态'] = final_state
+                merged_row['售出价格'] = ''
+                merged_row[SOLD_AT_FIELD] = ''
+                merged_row['处理标签'] = final_state
+                continue
 
             buy_price = (merged_row.get('购入价格') or '').strip()
             sell_price = (merged_row.get('售出价格') or '').strip()
@@ -424,14 +439,19 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
         except Exception as e:
             logger.warning("售出价格解析失败 '%s': %s", row.get('书名'), e)
 
+        # 赠送/丢弃不算卖出，但也不属于持有
+        if (row.get('状态') or '').strip() in {GIFTED_STATE, DISCARDED_STATE}:
+            row[SOLD_AT_FIELD] = ''
+            row['售出价格'] = ''
+
         # 核心逻辑：区分"持有"与"未持有"
-        if row['状态'] not in ['已售', '已移除']:
+        if row['状态'] not in ['已售', '已移除', GIFTED_STATE, DISCARDED_STATE]:
             bp_raw = row.get('购入价格', '').strip()
             row['状态'] = '持有' if bp_raw != '' else '未持有'
             row[SOLD_AT_FIELD] = ''
 
-        # 规则 B：识别"已移除"
-        if row.get('状态') != '已售' and key not in live_keys:
+        # 规则 B：识别"已移除"（已赠送/已丢弃单独保留，不应被归并到已移除）
+        if row.get('状态') not in {'已售', GIFTED_STATE, DISCARDED_STATE} and key not in live_keys:
             bp_raw = row.get('购入价格', '').strip()
             sp_raw = row.get('售出价格', '').strip()
             if bp_raw == '' and sp_raw == '' and row.get('状态') in ['持有', '未持有']:
@@ -540,6 +560,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
     inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
     sold_rows = [r for r in rows if r.get('状态') == '已售']
+    gifted_rows = [r for r in rows if r.get('状态') == GIFTED_STATE]
+    discarded_rows = [r for r in rows if r.get('状态') == DISCARDED_STATE]
     removed_rows = [r for r in rows if r.get('状态') == '已移除']
 
     # 1. 计算核心指标
@@ -578,6 +600,16 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
     for r in sold_rows:
         try:
             total_realized_profit += float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+    for r in gifted_rows:
+        try:
+            total_realized_profit -= float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+    for r in discarded_rows:
+        try:
+            total_realized_profit -= float(r.get('购入价格') or 0)
         except (ValueError, TypeError):
             pass
 
@@ -919,18 +951,20 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
     <details class="details-card">
         <summary>
-            <span>📦 购入 / 售出统计（5 项）</span>
-            <span class="details-hint">查看累计购入、当前持有、已售出等数量</span>
+            <span>📦 购入 / 处置统计（7 项）</span>
+            <span class="details-hint">查看累计购入、当前持有、已售出、已赠送、已丢弃等数量</span>
         </summary>
         <div class="details-body">
             <div class="summary-box" style="margin: 18px 0 0;">
                 <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
                 <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
                 <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已赠送</div><div class="card-val">{len(gifted_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已丢弃</div><div class="card-val">{len(discarded_rows)} 本</div></div>
                 <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
                 <div class="card"><div class="card-label">已移除</div><div class="card-val">{len(removed_rows)} 本</div></div>
             </div>
-            <p class="details-note">说明：累计购入按“购入价格已填写”统计；当前持有为已购入且未售出；观察中为仅跟踪价格、未填写购入价的书。</p>
+            <p class="details-note">说明：累计购入按“购入价格已填写”统计；已赠送和已丢弃都不计卖出收入，但会保留购入成本并计入已实现损失。</p>
         </div>
     </details>
 

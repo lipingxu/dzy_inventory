@@ -125,6 +125,65 @@ def _row_identity(row):
     return None
 
 
+def _manual_row_aliases(row):
+    """返回一个手工记录可用于匹配的备用键，优先 ISBN，再回退书名和记录ID。"""
+    aliases = []
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        aliases.append(f"id:{record_id}")
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        aliases.append(f"isbn:{isbn}")
+    title = (row.get('书名') or '').strip()
+    if title:
+        aliases.append(f"title:{title}")
+    return aliases
+
+
+def _manual_row_score(row):
+    """用于比较同一本书的重复覆盖记录，优先保留更完整的一条。"""
+    score = 0
+    for key in ['购入价格', '售出价格', '状态', '处理标签', '备注', SOLD_AT_FIELD, '书名']:
+        if (row.get(key) or '').strip():
+            score += 1
+    return score
+
+
+def _merge_manual_duplicate_rows(manual_rows):
+    """合并同 ISBN/书名 的重复覆盖记录，保留含实值的那一条。"""
+    grouped = {}
+    for row in manual_rows:
+        key = None
+        for alias in _manual_row_aliases(row):
+            if alias.startswith('isbn:') or alias.startswith('title:'):
+                key = alias
+                break
+        if not key:
+            key = (row.get(RECORD_ID_FIELD) or '').strip() or _row_identity(row)
+        grouped.setdefault(key, []).append(row)
+
+    merged = []
+    for group in grouped.values():
+        chosen = None
+        for row in group:
+            if chosen is None or _manual_row_score(row) > _manual_row_score(chosen):
+                chosen = dict(row)
+            else:
+                for field in set(chosen) | set(row):
+                    if field in (RECORD_ID_FIELD, 'ISBN', '书名'):
+                        continue
+                    chosen_val = (chosen.get(field) or '').strip()
+                    row_val = (row.get(field) or '').strip()
+                    if not chosen_val and row_val:
+                        chosen[field] = row_val
+                    elif field in {'状态', '处理标签'} and chosen_val in {'', '未持有'} and row_val:
+                        chosen[field] = row_val
+                    elif field in {'购入价格', '售出价格'} and chosen_val in {'', '0'} and row_val not in {'', '0'}:
+                        chosen[field] = row_val
+        merged.append(chosen)
+    return merged
+
+
 def load_manual_overrides(overrides_path='manual_overrides.csv'):
     """读取手工覆盖文件，返回表头和数据行。"""
     manual_headers = []
@@ -159,15 +218,17 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
 
     existing_map = {}
     for row in existing_rows:
-        identity = _row_identity(row)
-        if identity:
-            existing_map[identity] = row
+        for identity in _manual_row_aliases(row):
+            existing_map.setdefault(identity, row)
 
     manual_rows = []
     seen_keys = set()
     for identity, source in source_rows:
         seen_keys.add(identity)
         existing = existing_map.get(identity)
+        for alias in _manual_row_aliases(source):
+            if alias in existing_map and existing is None:
+                existing = existing_map[alias]
 
         out = {h: '' for h in manual_headers}
         out[RECORD_ID_FIELD] = (source.get(RECORD_ID_FIELD) or '').strip()
@@ -204,6 +265,7 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         out['ISBN'] = _format_isbn_for_csv(existing.get('ISBN'))
         manual_rows.append(out)
 
+    manual_rows = _merge_manual_duplicate_rows(manual_rows)
     _write_csv_atomic(overrides_path, manual_headers, manual_rows)
     return manual_headers, manual_rows
 
@@ -227,9 +289,8 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
 
     override_map = {}
     for manual_row in manual_rows:
-        identity = _row_identity(manual_row)
-        if identity:
-            override_map[identity] = manual_row
+        for identity in _manual_row_aliases(manual_row):
+            override_map.setdefault(identity, manual_row)
 
     merged_rows = []
     today = datetime.now().strftime('%Y-%m-%d')
@@ -239,8 +300,12 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
             merged_row.get('状态') == '已售'
             or bool((merged_row.get('售出价格') or '').strip())
         )
-        identity = _row_identity(merged_row)
-        override = override_map.get(identity) if identity else None
+        override = None
+        for identity in _manual_row_aliases(merged_row):
+            candidate = override_map.get(identity)
+            if candidate:
+                override = candidate
+                break
         if override:
             for key, raw_value in override.items():
                 if key in (RECORD_ID_FIELD, 'ISBN'):
@@ -272,6 +337,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                 if not sold_at and not was_sold:
                     merged_row[SOLD_AT_FIELD] = today
                 merged_row['状态'] = '已售'
+                merged_row['处理标签'] = '已售'
             elif buy_price and merged_row.get('状态') != '已售':
                 merged_row[SOLD_AT_FIELD] = ''
                 merged_row['状态'] = '持有'
@@ -436,6 +502,7 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
                 if not (row.get(SOLD_AT_FIELD) or '').strip():
                     row[SOLD_AT_FIELD] = capture_date
                 row['状态'] = '已售'
+                row['处理标签'] = '已售'
         except Exception as e:
             logger.warning("售出价格解析失败 '%s': %s", row.get('书名'), e)
 

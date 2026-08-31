@@ -1072,8 +1072,64 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             html += f"<td{class_attr}{title_attr}>{value_html}</td>"
         html += "</tr>"
 
-    html += f"""</tbody></table></div></div></details>
-     
+    html += "</tbody></table></div></div></details>"
+
+    def _build_disposal_section(title, hint, section_rows, outcome_text):
+        colspan = 5 + len(report_tail_headers)
+        section_html = f"""
+    <details class="details-card">
+        <summary>
+            <span>{title}（{len(section_rows)} 本）</span>
+            <span class="details-hint">{hint}</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>处理结果</th><th>已实现损益</th>
+                            {"".join([f"<th class='{'col-status' if ch in {'状态', '处理标签'} else ('col-note' if ch == '备注' else '')}'>{ch}</th>" for ch in report_tail_headers])}
+                        </tr>
+                    </thead>
+                    <tbody>"""
+        if not section_rows:
+            section_html += f"<tr><td colspan='{colspan}' class='empty-hint'>暂无{outcome_text}书籍。</td></tr>"
+        for r in section_rows:
+            raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+            loss = "-"
+            if r.get('购入价格'):
+                try:
+                    value = -float(r.get('购入价格') or 0)
+                    loss = f"<span class='profit-n'>{value:.2f}</span>"
+                except (ValueError, TypeError):
+                    pass
+            section_html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
+            section_html += f"<td>{('¥' + r.get('购入价格', '')) if r.get('购入价格') else '-'}</td><td>{outcome_text}</td><td>{loss}</td>"
+            for ch in report_tail_headers:
+                td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
+                class_attr = f" class='{td_class}'" if td_class else ""
+                value = r.get(ch, '-') or '-'
+                value_html = html_lib.escape(value)
+                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
+                section_html += f"<td{class_attr}{title_attr}>{value_html}</td>"
+            section_html += "</tr>"
+        section_html += "</tbody></table></div></div></details>"
+        return section_html
+
+    html += _build_disposal_section(
+        "🎁 已赠送结项",
+        "已送出，不算卖出收入，但保留购入成本并计入已实现损失",
+        gifted_rows,
+        "已赠送",
+    )
+    html += _build_disposal_section(
+        "🗑️ 已丢弃结项",
+        "已损坏或废弃，不算卖出收入，但保留购入成本并计入已实现损失",
+        discarded_rows,
+        "已丢弃",
+    )
+
+    html += f"""
     <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
     <script>
         // 1. 初始化趋势图

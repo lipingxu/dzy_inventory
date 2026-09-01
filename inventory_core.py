@@ -665,6 +665,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
     inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
     sold_rows = [r for r in rows if r.get('状态') == '已售']
+    sold_rows.sort(key=lambda row: ((row.get(SOLD_AT_FIELD) or '').strip() or '9999-12-31', (row.get('书名') or '').strip()))
     gifted_rows = [r for r in rows if r.get('状态') == GIFTED_STATE]
     discarded_rows = [r for r in rows if r.get('状态') == DISCARDED_STATE]
 
@@ -700,12 +701,14 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         except (ValueError, TypeError):
             pass
 
-    total_realized_profit = 0
+    sold_realized_profit = 0
     for r in sold_rows:
         try:
-            total_realized_profit += float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0)
+            sold_realized_profit += float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0)
         except (ValueError, TypeError):
             pass
+
+    total_realized_profit = sold_realized_profit
     for r in gifted_rows:
         try:
             total_realized_profit -= float(r.get('购入价格') or 0)
@@ -998,7 +1001,13 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             </div>
         </div>
         <div class="card">
-            <div class="card-label">实际盈亏（已实现）</div>
+            <div class="card-label">已售实际盈亏</div>
+            <div class="card-val {'val-p' if sold_realized_profit>=0 else 'val-n'}">
+                {'+' if sold_realized_profit>=0 else ''}{sold_realized_profit:.2f}
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-label">实际盈亏（含赠送 / 丢弃）</div>
             <div class="card-val {'val-p' if total_realized_profit>=0 else 'val-n'}">
                 {'+' if total_realized_profit>=0 else ''}{total_realized_profit:.2f}
             </div>

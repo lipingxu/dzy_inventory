@@ -561,11 +561,12 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
             if bp_raw == '' and sp_raw == '' and row.get('状态') in ['持有', '未持有']:
                 row['状态'] = '已移除'
 
-        # 维护历史最高价
+        # 维护历史最高价：只允许日期价格列参与，避免备注等自定义列中的数字污染最高价。
         old_max = float(row.get('历史最高价') or 0)
         current_prices = []
-        for k, v in row.items():
-            if k not in FIXED_HEADERS and v:
+        for price_date in tracked_dates:
+            v = row.get(price_date)
+            if v:
                 try:
                     current_prices.append(float(v))
                 except ValueError:

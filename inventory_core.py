@@ -571,7 +571,17 @@ def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
                     current_prices.append(float(v))
                 except ValueError:
                     pass
-        new_max = max(old_max, max(current_prices) if current_prices else 0)
+        date_max = max(current_prices) if current_prices else 0
+        note_value = (row.get('备注') or '').strip()
+        try:
+            note_number = float(note_value)
+        except ValueError:
+            note_number = None
+
+        # 修正旧版本留下的污染值：只有最高价恰好等于纯数字备注且高于所有日期价格时才回退。
+        if note_number is not None and old_max == note_number and old_max > date_max:
+            old_max = date_max
+        new_max = max(old_max, date_max)
 
         out_row = {h: row.get(h, '') for h in new_headers}
         out_row['历史最高价'] = f"{new_max:.2f}"

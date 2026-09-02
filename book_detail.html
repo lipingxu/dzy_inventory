@@ -209,7 +209,7 @@
       <div class="toolbar">
         <div class="range-group" id="range-group"></div>
       </div>
-      <div class="hint">说明：无报价以断点显示，不会按 0 元连线；折线按每日记录阶梯变化，不做平滑处理。</div>
+      <div class="hint">说明：无报价以断点显示，不会按 0 元连线；折线使用直线连接（非平滑）。</div>
       <div id="chart"></div>
     </section>
   </div>
@@ -444,7 +444,6 @@
           data: y,
           connectNulls: false,
           smooth: false,
-          step: 'end',
           symbol: 'circle',
           symbolSize: 6,
           itemStyle: { color: '#2563eb' },

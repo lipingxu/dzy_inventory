@@ -1231,10 +1231,16 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
-        .note-badge {{ background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }}
+        .note-badge {{
+            display: inline-block; vertical-align: middle; background: linear-gradient(135deg, #fef3c7, #e0f2fe);
+            color: #075985; border: 1px solid #7dd3fc; box-shadow: 0 1px 3px rgba(14, 116, 144, 0.12);
+            cursor: help; transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .note-badge:hover {{ transform: translateY(-1px); box-shadow: 0 4px 10px rgba(14, 116, 144, 0.18); }}
         .sb {{ background: #fee2e2; color: #ef4444; }}
         .up {{ background: #fee2e2; color: #ef4444; }}
         .dn {{ background: #dcfce7; color: #22c55e; }}
+        .col-note:hover {{ background: #f8fafc; color: #0f172a; }}
         
         .gray td {{ color: #94a3b8 !important; opacity: 0.8; }}
         .p-low {{ color: #22c55e; font-weight: 700; }}

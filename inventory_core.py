@@ -1079,6 +1079,11 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
 
             badges = ""
             at_peak = latest_p > 0 and abs(latest_p - max_p) < 0.01
+            note_text = (r.get('备注') or '').strip()
+            if note_text:
+                note_display = html_lib.escape(note_text).replace('\n', ' ')
+                note_display = note_display[:18] + '…' if len(note_display) > 18 else note_display
+                badges += f"<span class='badge note-badge' title='{html_lib.escape(note_text, quote=True)}'>注:{note_display}</span>"
             if at_peak:
                 badges += "<span class='badge badge-peak'>\U0001f525</span>"
             if r.get('状态') == '未持有':
@@ -1226,6 +1231,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
+        .note-badge {{ background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }}
         .sb {{ background: #fee2e2; color: #ef4444; }}
         .up {{ background: #fee2e2; color: #ef4444; }}
         .dn {{ background: #dcfce7; color: #22c55e; }}

@@ -15,6 +15,8 @@
       --primary-soft: rgba(37, 99, 235, 0.08);
       --danger: #ef4444;
       --success: #16a34a;
+      --peak: #f59e0b;
+      --peak-soft: #fffbeb;
     }
     * { box-sizing: border-box; }
     body {
@@ -90,8 +92,44 @@
       font-weight: 800;
       line-height: 1.2;
     }
-    .up { color: var(--success); }
-    .dn { color: var(--danger); }
+    .up { color: var(--danger); }
+    .dn { color: var(--success); }
+    .kpi.is-peak {
+      border-color: #fcd34d;
+      background: var(--peak-soft);
+    }
+    .kpi.is-peak .value {
+      color: #b45309;
+    }
+    .peak-chip {
+      display: none;
+      border-color: #fcd34d;
+      background: #fef3c7;
+      color: #b45309;
+    }
+    .peak-chip.show {
+      display: inline-flex;
+    }
+    .note-card {
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .note-card.show {
+      display: block;
+    }
+    .note-card .label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-bottom: 7px;
+      font-weight: 700;
+    }
+    .note-card .content {
+      color: #334155;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .chart-panel {
       padding: 16px 16px 10px;
     }
@@ -149,24 +187,29 @@
         <span class="chip" id="book-isbn">ISBN: -</span>
         <span class="chip" id="book-status">状态: -</span>
         <span class="chip" id="book-source">数据源: -</span>
+        <span class="chip peak-chip" id="book-peak-chip">🔥 当前最高价</span>
       </div>
     </section>
 
     <section class="kpis">
-      <div class="panel kpi"><div class="label">最新报价</div><div class="value" id="latest-price">-</div></div>
-      <div class="panel kpi"><div class="label">历史最高价</div><div class="value" id="max-price">-</div></div>
+      <div class="panel kpi" id="latest-card"><div class="label">最新报价</div><div class="value" id="latest-price">-</div></div>
+      <div class="panel kpi" id="max-card"><div class="label">历史最高价</div><div class="value" id="max-price">-</div></div>
       <div class="panel kpi"><div class="label">最高价日期</div><div class="value" id="max-date">-</div></div>
       <div class="panel kpi"><div class="label">区间涨跌</div><div class="value" id="range-change">-</div></div>
       <div class="panel kpi"><div class="label">有报价天数</div><div class="value" id="quote-days">-</div></div>
       <div class="panel kpi"><div class="label">无报价天数</div><div class="value" id="no-quote-days">-</div></div>
     </section>
 
+    <section class="panel note-card" id="book-note-card">
+      <div class="label">备注</div>
+      <div class="content" id="book-note"></div>
+    </section>
+
     <section class="panel chart-panel">
       <div class="toolbar">
         <div class="range-group" id="range-group"></div>
-        <div class="view-group" id="view-group"></div>
       </div>
-      <div class="hint">说明：无报价以断点显示，不会按 0 元连线。</div>
+      <div class="hint">说明：无报价以断点显示，不会按 0 元连线；折线按每日记录阶梯变化，不做平滑处理。</div>
       <div id="chart"></div>
     </section>
   </div>
@@ -180,12 +223,7 @@
       { key: '365', label: '近1年', days: 365 },
       { key: 'all', label: '全部', days: null }
     ];
-    const viewOptions = [
-      { key: 'line', label: '折线图' },
-      { key: 'bars', label: '柱状图' }
-    ];
     let currentRange = '365';
-    let currentView = 'line';
     let chart = null;
     let fullSeries = [];
     let historicalMaxPrice = null;
@@ -349,6 +387,7 @@
       const displayMax = historicalMaxPrice !== null
         ? { value: historicalMaxPrice, date: historicalMaxDate }
         : maxPoint;
+      const isCurrentPeak = Boolean(latest && displayMax && Math.abs(latest.value - displayMax.value) < 0.01);
       let change = null;
       if (quoted.length >= 2) {
         change = quoted[quoted.length - 1].value - quoted[0].value;
@@ -356,6 +395,9 @@
       document.getElementById('latest-price').textContent = latest ? money(latest.value) : '无报价';
       document.getElementById('max-price').textContent = displayMax ? money(displayMax.value) : '无最高价';
       document.getElementById('max-date').textContent = displayMax && displayMax.date ? displayMax.date : '-';
+      document.getElementById('latest-card').classList.toggle('is-peak', isCurrentPeak);
+      document.getElementById('max-card').classList.toggle('is-peak', isCurrentPeak);
+      document.getElementById('book-peak-chip').classList.toggle('show', isCurrentPeak);
       const changeEl = document.getElementById('range-change');
       if (change === null) {
         changeEl.textContent = '-';
@@ -377,6 +419,8 @@
       const y = displaySeries.map(p => p.value);
       const quoted = displaySeries.filter(p => p.value !== null);
       const maxPoint = quoted.reduce((acc, cur) => (!acc || cur.value > acc.value ? cur : acc), null);
+      const latest = [...quoted].reverse().find(Boolean) || null;
+      const isCurrentPeak = Boolean(latest && historicalMaxPrice !== null && Math.abs(latest.value - historicalMaxPrice) < 0.01);
       if (!chart) chart = echarts.init(document.getElementById('chart'));
       chart.setOption({
         tooltip: {
@@ -389,23 +433,23 @@
           }
         },
         grid: { left: '5%', right: '3%', top: '10%', bottom: '14%', containLabel: true },
-        xAxis: { type: 'category', data: x, boundaryGap: currentView === 'bars', axisLabel: { color: '#64748b' } },
+        xAxis: { type: 'category', data: x, boundaryGap: false, axisLabel: { color: '#64748b' } },
         yAxis: {
           type: 'value',
           axisLabel: { formatter: '¥{value}', color: '#64748b' },
           splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } }
         },
         series: [{
-          type: currentView === 'bars' ? 'bar' : 'line',
+          type: 'line',
           data: y,
           connectNulls: false,
-          smooth: currentView !== 'bars',
-          symbol: currentView === 'bars' ? 'none' : 'circle',
+          smooth: false,
+          step: 'end',
+          symbol: 'circle',
           symbolSize: 6,
           itemStyle: { color: '#2563eb' },
           lineStyle: { width: 2.2, color: '#2563eb' },
-          barMaxWidth: 18,
-          areaStyle: currentView === 'bars' ? undefined : {
+          areaStyle: {
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
               { offset: 0, color: 'rgba(37,99,235,0.2)' },
               { offset: 1, color: 'rgba(37,99,235,0.03)' }
@@ -413,9 +457,13 @@
           },
           markPoint: maxPoint ? {
             symbolSize: 12,
-            data: [{ coord: [maxPoint.date, maxPoint.value], value: `¥${maxPoint.value.toFixed(2)}` }],
+            data: [{
+              coord: [maxPoint.date, maxPoint.value],
+              value: `¥${maxPoint.value.toFixed(2)}`,
+              name: isCurrentPeak && latest && latest.date === maxPoint.date ? '当前最高价' : '最高点'
+            }],
             itemStyle: { color: '#ef4444' },
-            label: { color: '#7f1d1d', formatter: '最高点' }
+            label: { color: '#7f1d1d', formatter: params => params.name }
           } : undefined
         }]
       }, true);
@@ -423,23 +471,12 @@
 
     function renderToolbar() {
       const rangeGroup = document.getElementById('range-group');
-      const viewGroup = document.getElementById('view-group');
       rangeGroup.innerHTML = rangeOptions.map(o =>
         `<button class="btn ${o.key === currentRange ? 'active' : ''}" data-range="${o.key}">${o.label}</button>`
-      ).join('');
-      viewGroup.innerHTML = viewOptions.map(o =>
-        `<button class="btn ${o.key === currentView ? 'active' : ''}" data-view="${o.key}">${o.label}</button>`
       ).join('');
       rangeGroup.querySelectorAll('button').forEach(btn => {
         btn.addEventListener('click', () => {
           currentRange = btn.getAttribute('data-range');
-          renderToolbar();
-          refresh();
-        });
-      });
-      viewGroup.querySelectorAll('button').forEach(btn => {
-        btn.addEventListener('click', () => {
-          currentView = btn.getAttribute('data-view');
           renderToolbar();
           refresh();
         });
@@ -467,6 +504,9 @@
         document.getElementById('book-title').textContent = title || '书籍详情';
         document.getElementById('book-isbn').textContent = `ISBN: ${isbn || '无'}`;
         document.getElementById('book-status').textContent = `状态: ${(target['状态'] || '未知').trim() || '未知'}`;
+        const note = (target['备注'] || '').trim();
+        document.getElementById('book-note-card').classList.toggle('show', Boolean(note));
+        document.getElementById('book-note').textContent = note;
 
         const history = await loadHistory();
         let dataSeries = [];

@@ -1063,6 +1063,32 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             headers_html.append(_custom_header_html(table_id, trend_col_idx + 2 + i, ch))
         return "".join(headers_html)
 
+    def _render_report_tail_cell(header_name, raw_value):
+        value = raw_value or '-'
+        escaped_value = html_lib.escape(value)
+        title_attr = f" title='{html_lib.escape(value, quote=True)}'" if value != '-' else ""
+        if header_name == '状态':
+            state_class = {
+                '持有': 'state-held',
+                '未持有': 'state-watching',
+                '已售': 'state-sold',
+                GIFTED_STATE: 'state-gifted',
+                DISCARDED_STATE: 'state-discarded',
+            }.get(value, 'state-default')
+            content = f"<span class='dashboard-pill state-pill {state_class}'>{escaped_value}</span>"
+            return f"<td class='col-status'{title_attr}>{content}</td>"
+        if header_name == '处理标签':
+            tag_class = {
+                '待售': 'tag-pending',
+                '已看': 'tag-read',
+            }.get(value, 'tag-default')
+            content = escaped_value if value == '-' else f"<span class='dashboard-pill tag-pill {tag_class}'>{escaped_value}</span>"
+            return f"<td class='col-status'{title_attr}>{content}</td>"
+        if header_name == '备注':
+            content = escaped_value if value == '-' else f"<span class='note-cell-content'>📝 {escaped_value}</span>"
+            return f"<td class='col-note'{title_attr}>{content}</td>"
+        return f"<td>{escaped_value}</td>"
+
     def _build_inventory_rows_html(target_rows):
         html_rows = []
         for r in target_rows:
@@ -1149,12 +1175,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             row_html += f"<td class='trend-col' data-val='{trnd_val}'>{trnd_html}</td>"
 
             for ch in report_tail_headers:
-                td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
-                class_attr = f" class='{td_class}'" if td_class else ""
-                value = r.get(ch, '-') or '-'
-                value_html = html_lib.escape(value)
-                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
-                row_html += f"<td{class_attr}{title_attr}>{value_html}</td>"
+                row_html += _render_report_tail_cell(ch, r.get(ch, '-'))
 
             row_html += "</tr>"
             html_rows.append(row_html)
@@ -1228,8 +1249,19 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         .book-link:hover {{ color: #2563eb; border-color: #93c5fd; }}
         .price-date-col {{ min-width: 56px; padding-left: 7px; padding-right: 7px; }}
         .trend-col {{ min-width: 105px; }}
-        .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .col-status {{ min-width: 86px; max-width: 100px; white-space: nowrap; }}
         .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .dashboard-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 46px; padding: 3px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; border: 1px solid transparent; }}
+        .state-held {{ color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }}
+        .state-watching {{ color: #64748b; background: #f1f5f9; border-color: #e2e8f0; }}
+        .state-sold {{ color: #15803d; background: #dcfce7; border-color: #bbf7d0; }}
+        .state-gifted {{ color: #7e22ce; background: #f3e8ff; border-color: #e9d5ff; }}
+        .state-discarded {{ color: #b91c1c; background: #fee2e2; border-color: #fecaca; }}
+        .state-default {{ color: #475569; background: #f8fafc; border-color: #e2e8f0; }}
+        .tag-pending {{ color: #b45309; background: #fef3c7; border-color: #fde68a; }}
+        .tag-read {{ color: #0369a1; background: #e0f2fe; border-color: #bae6fd; }}
+        .tag-default {{ color: #475569; background: #f8fafc; border-color: #e2e8f0; }}
+        .note-cell-content {{ display: block; padding: 5px 8px; border-radius: 6px; color: #075985; background: #f0f9ff; border-left: 3px solid #38bdf8; overflow: hidden; text-overflow: ellipsis; }}
         .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
         .note-badge {{
             display: inline-block; vertical-align: middle; background: linear-gradient(135deg, #fef3c7, #e0f2fe);
@@ -1391,12 +1423,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
         html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
         for ch in report_tail_headers:
-            td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
-            class_attr = f" class='{td_class}'" if td_class else ""
-            value = r.get(ch, '-') or '-'
-            value_html = html_lib.escape(value)
-            title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
-            html += f"<td{class_attr}{title_attr}>{value_html}</td>"
+            html += _render_report_tail_cell(ch, r.get(ch, '-'))
         html += "</tr>"
 
     html += "</tbody></table></div></div></details>"
@@ -1435,12 +1462,7 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
             section_html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
             section_html += f"<td>{('¥' + r.get('购入价格', '')) if r.get('购入价格') else '-'}</td><td>{outcome_text}</td><td>{loss}</td>"
             for ch in report_tail_headers:
-                td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
-                class_attr = f" class='{td_class}'" if td_class else ""
-                value = r.get(ch, '-') or '-'
-                value_html = html_lib.escape(value)
-                title_attr = f" title='{html_lib.escape(value, quote=True)}'" if ch in {'状态', '处理标签', '备注'} and value != '-' else ""
-                section_html += f"<td{class_attr}{title_attr}>{value_html}</td>"
+                section_html += _render_report_tail_cell(ch, r.get(ch, '-'))
             section_html += "</tr>"
         section_html += "</tbody></table></div></div></details>"
         return section_html

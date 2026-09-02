@@ -117,9 +117,11 @@
 inventory_core.py    # 共享核心模块（CSV 同步 / 报表生成 / API 解析）
 auto_sync_data.py    # 入口 B：自动化模式 (读文件参数, 写 inventory_auto.csv)
 manual_overrides.csv # 人工覆盖文件（录入状态/购入价/售出价/售出时间/处理标签/备注）
+price_history.csv    # 长期价格历史（按天记录，价格留空表示当日无收购报价）
 auto_fetch.py        # Playwright 自动抓取，调用 auto_sync_data.py
 override_editor.py   # 本地 override 可视化编辑器（保存/推送/触发同步）
 override_editor.html # 本地编辑器页面
+book_detail.html     # 书籍详情页（从报表点击书名进入，查看长期价格走势）
 delete_book.py       # 按 ISBN/书名同时删除两个 CSV 的目标书籍
 .github/workflows/   # GitHub Actions 执行工作流（由外部 cronjob 触发）
 backups/             # 每次同步前的 CSV 自动备份（git 忽略）
@@ -157,7 +159,17 @@ backups/             # 每次同步前的 CSV 自动备份（git 忽略）
    * `last_checked.txt`
    * `inventory_auto.csv`
    * `manual_overrides.csv`
+   * `price_history.csv`
    * `report_auto.html`
+   * `book_detail.html`
+
+### 价格历史与详情页
+* 主报表仍保持“最高价 + 最近 7 天价格”的紧凑展示。
+* 报表中点击书名会跳转到 `book_detail.html` 详情页。
+* 详情页优先读取 `price_history.csv` 展示长期趋势；若该文件尚未初始化，则自动回退读取 `inventory_auto.csv` 的近 7 天数据。
+* `price_history.csv` 只记录最近 365 天：
+  * 价格 > 0：写入当天收购价。
+  * 无收购价/不收：价格留空，图表以断点显示，不按 0 元连线。
 
 ### 本地编辑器触发同步（与 cron job 同机制）
 1. 运行：

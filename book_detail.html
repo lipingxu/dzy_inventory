@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>书籍价格详情</title>
+  <style>
+    :root {
+      --bg: #f4f7f9;
+      --card: #ffffff;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --primary: #2563eb;
+      --primary-soft: rgba(37, 99, 235, 0.08);
+      --danger: #ef4444;
+      --success: #16a34a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+    }
+    .wrap {
+      max-width: 1140px;
+      margin: 24px auto 36px;
+      padding: 0 14px;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+    .header {
+      padding: 18px 20px;
+      margin-bottom: 14px;
+    }
+    .title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(1.35rem, 2.5vw, 2rem);
+      line-height: 1.35;
+    }
+    .back-link {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .chips {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .chip {
+      border-radius: 999px;
+      border: 1px solid #bfdbfe;
+      background: var(--primary-soft);
+      color: var(--primary);
+      padding: 5px 10px;
+      font-size: 0.84rem;
+      font-weight: 600;
+    }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .kpi {
+      padding: 14px;
+    }
+    .kpi .label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-bottom: 7px;
+    }
+    .kpi .value {
+      font-size: 1.35rem;
+      font-weight: 800;
+      line-height: 1.2;
+    }
+    .up { color: var(--success); }
+    .dn { color: var(--danger); }
+    .chart-panel {
+      padding: 16px 16px 10px;
+    }
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+      align-items: center;
+    }
+    .range-group, .view-group {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      border: 1px solid var(--border);
+      background: #fff;
+      color: var(--muted);
+      border-radius: 20px;
+      padding: 6px 12px;
+      font-size: 0.84rem;
+      cursor: pointer;
+    }
+    .btn.active {
+      border-color: #93c5fd;
+      color: var(--primary);
+      background: var(--primary-soft);
+      font-weight: 700;
+    }
+    .hint {
+      color: var(--muted);
+      font-size: 0.82rem;
+      margin-bottom: 8px;
+    }
+    #chart {
+      width: 100%;
+      height: 460px;
+    }
+    .empty {
+      color: var(--muted);
+      padding: 30px 6px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="panel header">
+      <div class="title-row">
+        <h1 id="book-title">加载中…</h1>
+        <a class="back-link" href="report_auto.html">← 返回报表</a>
+      </div>
+      <div class="chips">
+        <span class="chip" id="book-isbn">ISBN: -</span>
+        <span class="chip" id="book-status">状态: -</span>
+        <span class="chip" id="book-source">数据源: -</span>
+      </div>
+    </section>
+
+    <section class="kpis">
+      <div class="panel kpi"><div class="label">最新报价</div><div class="value" id="latest-price">-</div></div>
+      <div class="panel kpi"><div class="label">历史最高价</div><div class="value" id="max-price">-</div></div>
+      <div class="panel kpi"><div class="label">最高价日期</div><div class="value" id="max-date">-</div></div>
+      <div class="panel kpi"><div class="label">区间涨跌</div><div class="value" id="range-change">-</div></div>
+      <div class="panel kpi"><div class="label">有报价天数</div><div class="value" id="quote-days">-</div></div>
+      <div class="panel kpi"><div class="label">无报价天数</div><div class="value" id="no-quote-days">-</div></div>
+    </section>
+
+    <section class="panel chart-panel">
+      <div class="toolbar">
+        <div class="range-group" id="range-group"></div>
+        <div class="view-group" id="view-group"></div>
+      </div>
+      <div class="hint">说明：无报价以断点显示，不会按 0 元连线。</div>
+      <div id="chart"></div>
+    </section>
+  </div>
+
+  <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+  <script>
+    const rangeOptions = [
+      { key: '30', label: '近30天', days: 30 },
+      { key: '90', label: '近90天', days: 90 },
+      { key: '180', label: '近180天', days: 180 },
+      { key: '365', label: '近1年', days: 365 },
+      { key: 'all', label: '全部', days: null }
+    ];
+    const viewOptions = [
+      { key: 'line', label: '折线图' },
+      { key: 'bars', label: '柱状图' }
+    ];
+    let currentRange = '365';
+    let currentView = 'line';
+    let chart = null;
+    let fullSeries = [];
+
+    function getParam(name) {
+      return new URLSearchParams(window.location.search).get(name) || '';
+    }
+    function normalizeIsbn(value) {
+      return (value || '').toString().replace(/^'/, '').trim();
+    }
+    function parseCsvLine(line) {
+      const cells = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (inQuotes && line[i + 1] === '"') {
+            current += '"';
+            i += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (ch === ',' && !inQuotes) {
+          cells.push(current);
+          current = '';
+        } else {
+          current += ch;
+        }
+      }
+      cells.push(current);
+      return cells;
+    }
+    function parseCsv(text) {
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return { headers: [], rows: [] };
+      const headers = parseCsvLine(lines[0]).map(h => h.trim());
+      const rows = lines.slice(1).map(line => {
+        const cols = parseCsvLine(line);
+        const row = {};
+        headers.forEach((h, idx) => { row[h] = cols[idx] ?? ''; });
+        return row;
+      });
+      return { headers, rows };
+    }
+    function toFloat(v) {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+    function money(v) {
+      return v === null || v === undefined ? '-' : `¥${Number(v).toFixed(2)}`;
+    }
+    function dateAddDays(date, days) {
+      const dt = new Date(date);
+      dt.setDate(dt.getDate() + days);
+      return dt.toISOString().slice(0, 10);
+    }
+    function asDateKey(v) {
+      return /^\d{4}-\d{2}-\d{2}$/.test((v || '').trim()) ? v.trim() : '';
+    }
+
+    async function loadInventory() {
+      const resp = await fetch('inventory_auto.csv', { cache: 'no-store' });
+      if (!resp.ok) throw new Error('读取 inventory_auto.csv 失败');
+      return parseCsv(await resp.text());
+    }
+    async function loadHistory() {
+      const resp = await fetch('price_history.csv', { cache: 'no-store' });
+      if (!resp.ok) return null;
+      return parseCsv(await resp.text());
+    }
+
+    function findTarget(inventoryRows) {
+      const rid = getParam('rid').trim();
+      const isbn = normalizeIsbn(getParam('isbn'));
+      const title = (getParam('title') || '').trim();
+      if (rid) {
+        const hit = inventoryRows.find(r => ((r['记录ID'] || '').trim() === rid));
+        if (hit) return hit;
+      }
+      if (isbn) {
+        const hit = inventoryRows.find(r => normalizeIsbn(r['ISBN']) === isbn);
+        if (hit) return hit;
+      }
+      if (title) {
+        const hit = inventoryRows.find(r => ((r['书名'] || '').trim() === title));
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    function buildSeriesFromHistory(historyRows, target) {
+      const rid = (target['记录ID'] || '').trim();
+      const isbn = normalizeIsbn(target['ISBN']);
+      const title = (target['书名'] || '').trim();
+      const rows = historyRows.filter(row => {
+        const day = asDateKey(row['日期']);
+        if (!day) return false;
+        const rowRid = (row['记录ID'] || '').trim();
+        const rowIsbn = normalizeIsbn(row['ISBN']);
+        const rowTitle = (row['书名'] || '').trim();
+        if (rid && rowRid) return rowRid === rid;
+        if (isbn && rowIsbn) return rowIsbn === isbn;
+        return title && rowTitle === title;
+      });
+      rows.sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
+      return rows.map(row => {
+        const val = toFloat(row['价格']);
+        return { date: row['日期'], value: val && val > 0 ? Number(val.toFixed(2)) : null };
+      });
+    }
+
+    function buildSeriesFromInventory(target, inventoryHeaders) {
+      const dateCols = inventoryHeaders.filter(asDateKey).sort();
+      return dateCols.map(day => {
+        const v = toFloat(target[day]);
+        return { date: day, value: v && v > 0 ? Number(v.toFixed(2)) : null };
+      });
+    }
+
+    function selectSeriesByRange(series, rangeKey) {
+      if (!series.length) return [];
+      const option = rangeOptions.find(o => o.key === rangeKey) || rangeOptions[3];
+      if (!option.days) return [...series];
+      const end = series[series.length - 1].date;
+      const start = dateAddDays(end, -(option.days - 1));
+      return series.filter(item => item.date >= start);
+    }
+
+    function fillKpis(displaySeries) {
+      const quoted = displaySeries.filter(p => p.value !== null);
+      const nullCount = displaySeries.length - quoted.length;
+      const latest = [...quoted].reverse().find(Boolean) || null;
+      const maxPoint = quoted.reduce((acc, cur) => (!acc || cur.value > acc.value ? cur : acc), null);
+      let change = null;
+      if (quoted.length >= 2) {
+        change = quoted[quoted.length - 1].value - quoted[0].value;
+      }
+      document.getElementById('latest-price').textContent = latest ? money(latest.value) : '无报价';
+      document.getElementById('max-price').textContent = maxPoint ? money(maxPoint.value) : '无最高价';
+      document.getElementById('max-date').textContent = maxPoint ? maxPoint.date : '-';
+      const changeEl = document.getElementById('range-change');
+      if (change === null) {
+        changeEl.textContent = '-';
+        changeEl.className = 'value';
+      } else {
+        changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}`;
+        changeEl.className = `value ${change >= 0 ? 'up' : 'dn'}`;
+      }
+      document.getElementById('quote-days').textContent = `${quoted.length} 天`;
+      document.getElementById('no-quote-days').textContent = `${nullCount} 天`;
+    }
+
+    function renderChart(displaySeries) {
+      if (!displaySeries.length) {
+        document.getElementById('chart').innerHTML = "<div class='empty'>暂无可展示的数据。</div>";
+        return;
+      }
+      const x = displaySeries.map(p => p.date);
+      const y = displaySeries.map(p => p.value);
+      const quoted = displaySeries.filter(p => p.value !== null);
+      const maxPoint = quoted.reduce((acc, cur) => (!acc || cur.value > acc.value ? cur : acc), null);
+      if (!chart) chart = echarts.init(document.getElementById('chart'));
+      chart.setOption({
+        tooltip: {
+          trigger: 'axis',
+          formatter(params) {
+            const p = params[0];
+            const v = p.value;
+            const desc = v === null || v === undefined ? '当日无收购报价' : `收购价：¥${Number(v).toFixed(2)}`;
+            return `${p.axisValue}<br/>${desc}`;
+          }
+        },
+        grid: { left: '5%', right: '3%', top: '10%', bottom: '14%', containLabel: true },
+        xAxis: { type: 'category', data: x, boundaryGap: currentView === 'bars', axisLabel: { color: '#64748b' } },
+        yAxis: {
+          type: 'value',
+          axisLabel: { formatter: '¥{value}', color: '#64748b' },
+          splitLine: { lineStyle: { type: 'dashed', color: '#e2e8f0' } }
+        },
+        series: [{
+          type: currentView === 'bars' ? 'bar' : 'line',
+          data: y,
+          connectNulls: false,
+          smooth: currentView !== 'bars',
+          symbol: currentView === 'bars' ? 'none' : 'circle',
+          symbolSize: 6,
+          itemStyle: { color: '#2563eb' },
+          lineStyle: { width: 2.2, color: '#2563eb' },
+          barMaxWidth: 18,
+          areaStyle: currentView === 'bars' ? undefined : {
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: 'rgba(37,99,235,0.2)' },
+              { offset: 1, color: 'rgba(37,99,235,0.03)' }
+            ])
+          },
+          markPoint: maxPoint ? {
+            symbolSize: 12,
+            data: [{ coord: [maxPoint.date, maxPoint.value], value: `¥${maxPoint.value.toFixed(2)}` }],
+            itemStyle: { color: '#ef4444' },
+            label: { color: '#7f1d1d', formatter: '最高点' }
+          } : undefined
+        }]
+      }, true);
+    }
+
+    function renderToolbar() {
+      const rangeGroup = document.getElementById('range-group');
+      const viewGroup = document.getElementById('view-group');
+      rangeGroup.innerHTML = rangeOptions.map(o =>
+        `<button class="btn ${o.key === currentRange ? 'active' : ''}" data-range="${o.key}">${o.label}</button>`
+      ).join('');
+      viewGroup.innerHTML = viewOptions.map(o =>
+        `<button class="btn ${o.key === currentView ? 'active' : ''}" data-view="${o.key}">${o.label}</button>`
+      ).join('');
+      rangeGroup.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          currentRange = btn.getAttribute('data-range');
+          renderToolbar();
+          refresh();
+        });
+      });
+      viewGroup.querySelectorAll('button').forEach(btn => {
+        btn.addEventListener('click', () => {
+          currentView = btn.getAttribute('data-view');
+          renderToolbar();
+          refresh();
+        });
+      });
+    }
+
+    function refresh() {
+      const selected = selectSeriesByRange(fullSeries, currentRange);
+      fillKpis(selected);
+      renderChart(selected);
+    }
+
+    async function init() {
+      try {
+        const inventory = await loadInventory();
+        const target = findTarget(inventory.rows);
+        if (!target) {
+          document.getElementById('book-title').textContent = getParam('title') || '未找到目标书籍';
+          document.getElementById('chart').innerHTML = "<div class='empty'>未找到该书记录，请先返回报表刷新后重试。</div>";
+          return;
+        }
+
+        const title = (target['书名'] || '').trim();
+        const isbn = normalizeIsbn(target['ISBN']);
+        document.getElementById('book-title').textContent = title || '书籍详情';
+        document.getElementById('book-isbn').textContent = `ISBN: ${isbn || '无'}`;
+        document.getElementById('book-status').textContent = `状态: ${(target['状态'] || '未知').trim() || '未知'}`;
+
+        const history = await loadHistory();
+        let dataSeries = [];
+        if (history && history.rows && history.rows.length) {
+          dataSeries = buildSeriesFromHistory(history.rows, target);
+        }
+        if (!dataSeries.length) {
+          dataSeries = buildSeriesFromInventory(target, inventory.headers);
+          document.getElementById('book-source').textContent = '数据源: inventory_auto.csv（近7天）';
+        } else {
+          document.getElementById('book-source').textContent = '数据源: price_history.csv';
+        }
+        fullSeries = dataSeries.sort((a, b) => a.date.localeCompare(b.date));
+        renderToolbar();
+        refresh();
+        window.addEventListener('resize', () => chart && chart.resize());
+      } catch (err) {
+        console.error(err);
+        document.getElementById('book-title').textContent = '详情加载失败';
+        document.getElementById('chart').innerHTML = "<div class='empty'>读取数据失败，请稍后重试。</div>";
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

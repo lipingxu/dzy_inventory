@@ -17,6 +17,7 @@ from inventory_core import (
     load_old_prices,
     migrate_and_update_csv,
     merge_manual_overrides,
+    sync_price_history,
     sync_manual_overrides,
     write_inventory_with_overrides,
     generate_report,
@@ -80,6 +81,8 @@ if __name__ == "__main__":
             print("📝 正在合并 manual_overrides.csv ...")
             headers, rows = merge_manual_overrides(headers, rows, manual_headers, manual_rows)
             write_inventory_with_overrides(headers, rows, csv_path=CSV_PATH)
+        print("🗂️ 正在更新 price_history.csv ...")
+        sync_price_history(rows, capture_date, history_path='price_history.csv')
 
         print(f"📊 正在生成 {REPORT_PATH}...")
         generate_report(headers, rows, books_data, report_path=REPORT_PATH, ordered_ids=ordered_ids)

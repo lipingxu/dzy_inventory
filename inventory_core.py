@@ -14,6 +14,7 @@ import subprocess
 import sys
 import uuid
 from datetime import datetime
+from urllib.parse import quote
 
 logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -635,6 +636,127 @@ def load_old_prices(csv_path):
     return old_prices
 
 
+def read_price_history(history_path='price_history.csv'):
+    """读取长期价格历史，允许在没有历史文件时回退到空列表。"""
+    rows = []
+    if not os.path.exists(history_path):
+        return rows
+    try:
+        with open(history_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+    except Exception as e:
+        logger.warning("读取 price_history 失败: %s", e)
+    return rows
+
+
+def sync_price_history(rows, capture_date, history_path='price_history.csv', retention_days=365):
+    """维护按天价格历史，价格为空表示当日无收购报价；同时保留历史最高价字段用于过渡。"""
+    try:
+        normalized_date = datetime.strptime(capture_date, '%Y-%m-%d').strftime('%Y-%m-%d')
+    except ValueError:
+        logger.warning("price_history 日期格式无效: %s", capture_date)
+        return
+
+    cutoff = datetime.strptime(normalized_date, '%Y-%m-%d').date().toordinal() - retention_days + 1
+    headers = ['日期', RECORD_ID_FIELD, 'ISBN', '书名', '价格', '历史最高价', '最高价日期']
+    existing_rows = []
+    if os.path.exists(history_path):
+        existing_rows = read_price_history(history_path)
+        filtered = []
+        for row in existing_rows:
+            day = (row.get('日期') or '').strip()
+            if not day:
+                continue
+            try:
+                day_ord = datetime.strptime(day, '%Y-%m-%d').date().toordinal()
+            except ValueError:
+                continue
+            if day_ord < cutoff:
+                continue
+            filtered.append(row)
+        existing_rows = filtered
+
+    index_map = {}
+    for idx, row in enumerate(existing_rows):
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+        identity = rid or isbn or title
+        if not identity:
+            continue
+        index_map[(row.get('日期', '').strip(), identity)] = idx
+
+    for row in rows:
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+        identity = rid or isbn or title
+        if not identity:
+            continue
+
+        date_values = []
+        max_price = 0.0
+        max_date = ''
+        for key, value in row.items():
+            if not _is_date_column(key):
+                continue
+            try:
+                val = float(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if val <= 0:
+                continue
+            date_values.append((key, val))
+            if val > max_price:
+                max_price = val
+                max_date = key
+        if not date_values:
+            continue
+
+        for date_key, price_value in date_values:
+            if date_key < normalized_date:
+                continue
+            price_str = f"{float(price_value):.2f}"
+            out = {
+                '日期': date_key,
+                RECORD_ID_FIELD: rid,
+                'ISBN': _format_isbn_for_csv(isbn),
+                '书名': title,
+                '价格': price_str,
+                '历史最高价': f"{max_price:.2f}",
+                '最高价日期': max_date,
+            }
+            key = (date_key, identity)
+            if key in index_map:
+                existing_rows[index_map[key]] = out
+            else:
+                existing_rows.append(out)
+                index_map[key] = len(existing_rows) - 1
+
+    # 保证当天当期行情至少写入一条，即使价格为空也记录为断点（不记作 0）
+    key = (normalized_date, rid or isbn or title)
+    if not any(item.get('日期') == normalized_date and ((item.get(RECORD_ID_FIELD) or '').strip() == rid or _normalize_isbn(item.get('ISBN')) == isbn or (item.get('书名') or '').strip() == title) for item in existing_rows):
+        if rows:
+            todays = next((r for r in rows if (r.get(RECORD_ID_FIELD) or '').strip() == rid or _normalize_isbn(r.get('ISBN')) == isbn or (r.get('书名') or '').strip() == title), None)
+            if todays:
+                todays_price = (todays.get(normalized_date) or '').strip()
+                out = {
+                    '日期': normalized_date,
+                    RECORD_ID_FIELD: rid,
+                    'ISBN': _format_isbn_for_csv(isbn),
+                    '书名': title,
+                    '价格': todays_price if todays_price and float(todays_price) > 0 else '',
+                    '历史最高价': f"{max_price:.2f}" if max_price else '',
+                    '最高价日期': max_date,
+                }
+                existing_rows.append(out)
+
+    existing_rows.sort(key=lambda r: (r.get('日期', ''), (r.get(RECORD_ID_FIELD) or ''), _normalize_isbn(r.get('ISBN')), (r.get('书名') or '')))
+    _write_csv_atomic(history_path, headers, existing_rows)
+
+
 def print_change_summary(books_data, old_prices):
     """打印行情变动摘要"""
     changes = []
@@ -679,6 +801,66 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         logger.warning("读取 last_checked.txt 失败: %s", e)
 
     latest_date = date_headers[-1] if date_headers else None
+
+    history_rows = read_price_history()
+    history_lookup = {}
+    for hrow in history_rows:
+        hdate = (hrow.get('日期') or '').strip()
+        if not hdate:
+            continue
+        rid = (hrow.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(hrow.get('ISBN'))
+        title = (hrow.get('书名') or '').strip()
+        identity = rid or isbn or title
+        if identity:
+            history_lookup.setdefault(identity, []).append(hrow)
+
+    def _history_for_row(row):
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+        identity = rid or isbn or title
+        return history_lookup.get(identity, [])
+
+    def _history_latest_price(row):
+        history_values = []
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('价格') or 0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                history_values.append((hrow.get('日期') or '', val))
+        if not history_values:
+            return None, None
+        history_values.sort(key=lambda item: item[0])
+        return history_values[-1][1], history_values[-1][0]
+
+    def _history_max_price(row):
+        max_val = 0.0
+        max_date = ''
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('历史最高价') or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if val > max_val:
+                max_val = val
+                max_date = hrow.get('最高价日期') or ''
+        if max_val > 0:
+            return max_val, max_date
+        vals = []
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('价格') or 0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                vals.append((hrow.get('日期') or '', val))
+        if vals:
+            vals.sort(key=lambda item: item[0])
+            return max(v for _, v in vals), max((d for d, v in vals if v == max(v for _, v in vals)), default='')
+        return None, None
 
     inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
     sold_rows = [r for r in rows if r.get('状态') == '已售']
@@ -769,6 +951,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                 order_map[b_info['title']] = idx
 
     def _latest_price_value(row):
+        history_latest, _ = _history_latest_price(row)
+        if history_latest is not None:
+            return float(history_latest)
         if not latest_date:
             return 0
         raw = row.get(latest_date, "0")
@@ -831,7 +1016,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         for r in target_rows:
             latest_p = _latest_price_value(r)
 
-            max_p = float(r['历史最高价'] or 0)
+            history_max, history_max_date = _history_max_price(r)
+            max_p = history_max if history_max is not None else float(r['历史最高价'] or 0)
             if latest_p == 0:
                 tr_cls = "class='gray'"
             elif latest_p > 0 and abs(latest_p - max_p) < 0.01:
@@ -862,9 +1048,12 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     elif tp == 'decrease_price':
                         badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
 
-            row_html = f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}{badges}</td>"
+            record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+            title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+            row_html = f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}{badges}</td>"
             max_cls = 'p-peak' if at_peak else 'p-max'
-            row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{r['历史最高价']}</span></td>"
+            display_max = max_p if max_p and max_p > 0 else (r['历史最高价'] or '0')
+            row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{display_max}</span></td>"
 
             ps = []
             for i, d in enumerate(date_headers):
@@ -978,6 +1167,8 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
         th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
         
         .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .book-link {{ color: #0f172a; text-decoration: none; border-bottom: 1px solid #cbd5e1; }}
+        .book-link:hover {{ color: #2563eb; border-color: #93c5fd; }}
         .price-date-col {{ min-width: 56px; padding-left: 7px; padding-right: 7px; }}
         .trend-col {{ min-width: 105px; }}
         .col-status {{ min-width: 80px; max-width: 90px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
@@ -1131,7 +1322,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                 profit = f"<span class='{'profit-p' if p>=0 else 'profit-n'}'>{'+' if p>=0 else ''}{p:.2f}</span>"
             except (ValueError, TypeError):
                 pass
-        html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
+        record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+        title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+        html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
         html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
         for ch in report_tail_headers:
             td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")
@@ -1173,7 +1366,9 @@ def generate_report(headers, rows, books_data, report_path='report.html', ordere
                     loss = f"<span class='profit-n'>{value:.2f}</span>"
                 except (ValueError, TypeError):
                     pass
-            section_html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{r['书名']}</td>"
+            record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+            title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+            section_html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
             section_html += f"<td>{('¥' + r.get('购入价格', '')) if r.get('购入价格') else '-'}</td><td>{outcome_text}</td><td>{loss}</td>"
             for ch in report_tail_headers:
                 td_class = "col-status" if ch in {'状态', '处理标签'} else ("col-note" if ch == '备注' else "")

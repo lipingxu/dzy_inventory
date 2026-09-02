@@ -126,6 +126,17 @@ def _row_identity(row):
     return None
 
 
+def _content_identity(row):
+    """构建内容匹配键：用于缺少记录ID的旧数据迁移。"""
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        return f"isbn:{isbn}"
+    title = (row.get('书名') or '').strip()
+    if title:
+        return f"title:{title}"
+    return None
+
+
 def _manual_row_aliases(row):
     """返回一个手工记录用于匹配的候选键：ISBN优先，且只有在无 ISBN 时才使用书名回退。"""
     aliases = []
@@ -138,6 +149,15 @@ def _manual_row_aliases(row):
     elif (row.get('书名') or '').strip():
         aliases.append(f"title:{(row.get('书名') or '').strip()}")
     return aliases
+
+
+def _find_manual_override(row, overrides_by_id, overrides_by_content):
+    """优先按记录ID匹配；已有记录ID时不再套用其他记录的同 ISBN 手工状态。"""
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        return overrides_by_id.get(record_id)
+    content_key = _content_identity(row)
+    return overrides_by_content.get(content_key) if content_key else None
 
 
 def _derive_business_state(row):
@@ -186,16 +206,13 @@ def _manual_row_score(row):
 
 
 def _merge_manual_duplicate_rows(manual_rows):
-    """合并同 ISBN/书名 的重复覆盖记录，保留含实值的那一条。"""
+    """合并重复覆盖记录；有记录ID时按记录ID保留多轮交易。"""
     grouped = {}
     for row in manual_rows:
-        key = None
-        for alias in _manual_row_aliases(row):
-            if alias.startswith('isbn:') or alias.startswith('title:'):
-                key = alias
-                break
+        record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+        key = f"id:{record_id}" if record_id else _content_identity(row)
         if not key:
-            key = (row.get(RECORD_ID_FIELD) or '').strip() or _row_identity(row)
+            key = _row_identity(row)
         grouped.setdefault(key, []).append(row)
 
     merged = []
@@ -218,6 +235,29 @@ def _merge_manual_duplicate_rows(manual_rows):
                         chosen[field] = row_val
         merged.append(chosen)
     return merged
+
+
+def _dedupe_business_duplicate_rows(rows):
+    """清理相同处置结果的重复行，保留最早出现的原始记录。"""
+    deduped = []
+    seen = set()
+    for row in rows:
+        state = (row.get('状态') or '').strip()
+        if state in {'已售', GIFTED_STATE, DISCARDED_STATE}:
+            key = (
+                state,
+                _normalize_isbn(row.get('ISBN')),
+                (row.get('书名') or '').strip(),
+                (row.get('购入价格') or '').strip(),
+                (row.get('售出价格') or '').strip(),
+                (row.get('处理标签') or '').strip(),
+                (row.get('备注') or '').strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+        deduped.append(row)
+    return deduped
 
 
 def load_manual_overrides(overrides_path='manual_overrides.csv'):
@@ -252,19 +292,22 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
             continue
         source_rows.append((identity, row))
 
-    existing_map = {}
+    existing_by_id = {}
+    existing_by_content = {}
     for row in existing_rows:
-        for identity in _manual_row_aliases(row):
-            existing_map.setdefault(identity, row)
+        record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+        if record_id:
+            existing_by_id.setdefault(record_id, row)
+        else:
+            content_key = _content_identity(row)
+            if content_key:
+                existing_by_content.setdefault(content_key, row)
 
     manual_rows = []
     seen_keys = set()
     for identity, source in source_rows:
         seen_keys.add(identity)
-        existing = existing_map.get(identity)
-        for alias in _manual_row_aliases(source):
-            if alias in existing_map and existing is None:
-                existing = existing_map[alias]
+        existing = _find_manual_override(source, existing_by_id, existing_by_content)
 
         out = {h: '' for h in manual_headers}
         out[RECORD_ID_FIELD] = (source.get(RECORD_ID_FIELD) or '').strip()
@@ -291,7 +334,9 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
         manual_rows.append(out)
 
     # 保留 manual 里有但当前主表没有的记录（防误删历史手工记录）
-    for identity, existing in existing_map.items():
+    retained_rows = [(f"id:{record_id}", row) for record_id, row in existing_by_id.items()]
+    retained_rows += list(existing_by_content.items())
+    for identity, existing in retained_rows:
         if identity in seen_keys:
             continue
         out = {h: '' for h in manual_headers}
@@ -324,10 +369,16 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
 
     merged_headers = headers + extra_headers
 
-    override_map = {}
+    overrides_by_id = {}
+    overrides_by_content = {}
     for manual_row in manual_rows:
-        for identity in _manual_row_aliases(manual_row):
-            override_map.setdefault(identity, manual_row)
+        record_id = (manual_row.get(RECORD_ID_FIELD) or '').strip()
+        if record_id:
+            overrides_by_id.setdefault(record_id, manual_row)
+        else:
+            content_key = _content_identity(manual_row)
+            if content_key:
+                overrides_by_content.setdefault(content_key, manual_row)
 
     merged_rows = []
     matched_manual_ids = set()
@@ -338,12 +389,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
             merged_row.get('状态') == '已售'
             or bool((merged_row.get('售出价格') or '').strip())
         )
-        override = None
-        for identity in _manual_row_aliases(merged_row):
-            candidate = override_map.get(identity)
-            if candidate:
-                override = candidate
-                break
+        override = _find_manual_override(merged_row, overrides_by_id, overrides_by_content)
         if override:
             matched_manual_ids.add(id(override))
             for key, raw_value in override.items():
@@ -391,13 +437,13 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
         _derive_business_state(merged_row)
         merged_rows.append(merged_row)
 
-    return merged_headers, merged_rows
+    return merged_headers, _dedupe_business_duplicate_rows(merged_rows)
 
 
 def write_inventory_with_overrides(headers, rows, csv_path='inventory_auto.csv'):
     """将合并后的主表数据原子写回 CSV，确保手工字段持久化到主表。"""
     normalized_rows = []
-    for row in rows:
+    for row in _dedupe_business_duplicate_rows(rows):
         out = {h: row.get(h, '') for h in headers}
         if not (out.get(RECORD_ID_FIELD) or '').strip():
             out[RECORD_ID_FIELD] = _generate_record_id()
@@ -678,27 +724,42 @@ def sync_price_history(rows, capture_date, history_path='price_history.csv', ret
             filtered.append(row)
         existing_rows = filtered
 
-    index_map = {}
-    for idx, row in enumerate(existing_rows):
+    def _history_identity(row):
         rid = (row.get(RECORD_ID_FIELD) or '').strip()
         isbn = _normalize_isbn(row.get('ISBN'))
         title = (row.get('书名') or '').strip()
-        identity = rid or isbn or title
+        return rid or isbn or title
+
+    def _row_max_info(row, date_values):
+        try:
+            stored_max = float(row.get('历史最高价') or 0)
+        except (TypeError, ValueError):
+            stored_max = 0
+        date_max = max((value for _, value in date_values), default=0)
+        max_price = stored_max if stored_max > 0 else date_max
+        max_date = ''
+        if max_price > 0:
+            matched_dates = [day for day, value in date_values if abs(value - max_price) < 0.01]
+            if matched_dates:
+                max_date = sorted(matched_dates)[-1]
+        return max_price, max_date
+
+    index_map = {}
+    for idx, row in enumerate(existing_rows):
+        identity = _history_identity(row)
         if not identity:
             continue
         index_map[(row.get('日期', '').strip(), identity)] = idx
 
     for row in rows:
+        identity = _history_identity(row)
+        if not identity:
+            continue
         rid = (row.get(RECORD_ID_FIELD) or '').strip()
         isbn = _normalize_isbn(row.get('ISBN'))
         title = (row.get('书名') or '').strip()
-        identity = rid or isbn or title
-        if not identity:
-            continue
 
         date_values = []
-        max_price = 0.0
-        max_date = ''
         for key, value in row.items():
             if not _is_date_column(key):
                 continue
@@ -709,23 +770,28 @@ def sync_price_history(rows, capture_date, history_path='price_history.csv', ret
             if val <= 0:
                 continue
             date_values.append((key, val))
-            if val > max_price:
-                max_price = val
-                max_date = key
-        if not date_values:
-            continue
 
-        for date_key, price_value in date_values:
-            if date_key < normalized_date:
+        max_price, max_date = _row_max_info(row, date_values)
+        date_keys = {date_key for date_key, _ in date_values}
+        date_keys.add(normalized_date)
+        price_by_date = {date_key: price_value for date_key, price_value in date_values}
+
+        for date_key in sorted(date_keys):
+            try:
+                day_ord = datetime.strptime(date_key, '%Y-%m-%d').date().toordinal()
+            except ValueError:
                 continue
-            price_str = f"{float(price_value):.2f}"
+            if day_ord < cutoff:
+                continue
+            price_value = price_by_date.get(date_key)
+            price_str = f"{float(price_value):.2f}" if price_value and price_value > 0 else ''
             out = {
                 '日期': date_key,
                 RECORD_ID_FIELD: rid,
                 'ISBN': _format_isbn_for_csv(isbn),
                 '书名': title,
                 '价格': price_str,
-                '历史最高价': f"{max_price:.2f}",
+                '历史最高价': f"{max_price:.2f}" if max_price > 0 else '',
                 '最高价日期': max_date,
             }
             key = (date_key, identity)
@@ -735,26 +801,12 @@ def sync_price_history(rows, capture_date, history_path='price_history.csv', ret
                 existing_rows.append(out)
                 index_map[key] = len(existing_rows) - 1
 
-    # 保证当天当期行情至少写入一条，即使价格为空也记录为断点（不记作 0）
-    key = (normalized_date, rid or isbn or title)
-    if not any(item.get('日期') == normalized_date and ((item.get(RECORD_ID_FIELD) or '').strip() == rid or _normalize_isbn(item.get('ISBN')) == isbn or (item.get('书名') or '').strip() == title) for item in existing_rows):
-        if rows:
-            todays = next((r for r in rows if (r.get(RECORD_ID_FIELD) or '').strip() == rid or _normalize_isbn(r.get('ISBN')) == isbn or (r.get('书名') or '').strip() == title), None)
-            if todays:
-                todays_price = (todays.get(normalized_date) or '').strip()
-                out = {
-                    '日期': normalized_date,
-                    RECORD_ID_FIELD: rid,
-                    'ISBN': _format_isbn_for_csv(isbn),
-                    '书名': title,
-                    '价格': todays_price if todays_price and float(todays_price) > 0 else '',
-                    '历史最高价': f"{max_price:.2f}" if max_price else '',
-                    '最高价日期': max_date,
-                }
-                existing_rows.append(out)
+    normalized_rows = []
+    for row in existing_rows:
+        normalized_rows.append({header: row.get(header, '') for header in headers})
 
-    existing_rows.sort(key=lambda r: (r.get('日期', ''), (r.get(RECORD_ID_FIELD) or ''), _normalize_isbn(r.get('ISBN')), (r.get('书名') or '')))
-    _write_csv_atomic(history_path, headers, existing_rows)
+    normalized_rows.sort(key=lambda r: (r.get('日期', ''), (r.get(RECORD_ID_FIELD) or ''), _normalize_isbn(r.get('ISBN')), (r.get('书名') or '')))
+    _write_csv_atomic(history_path, headers, normalized_rows)
 
 
 def print_change_summary(books_data, old_prices):

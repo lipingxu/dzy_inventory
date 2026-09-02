@@ -188,6 +188,8 @@
     let currentView = 'line';
     let chart = null;
     let fullSeries = [];
+    let historicalMaxPrice = null;
+    let historicalMaxDate = '';
 
     function getParam(name) {
       return new URLSearchParams(window.location.search).get(name) || '';
@@ -277,11 +279,11 @@
       return null;
     }
 
-    function buildSeriesFromHistory(historyRows, target) {
+    function matchedHistoryRows(historyRows, target) {
       const rid = (target['记录ID'] || '').trim();
       const isbn = normalizeIsbn(target['ISBN']);
       const title = (target['书名'] || '').trim();
-      const rows = historyRows.filter(row => {
+      return historyRows.filter(row => {
         const day = asDateKey(row['日期']);
         if (!day) return false;
         const rowRid = (row['记录ID'] || '').trim();
@@ -291,11 +293,35 @@
         if (isbn && rowIsbn) return rowIsbn === isbn;
         return title && rowTitle === title;
       });
+    }
+    function buildSeriesFromHistory(rows) {
       rows.sort((a, b) => (a['日期'] || '').localeCompare(b['日期'] || ''));
       return rows.map(row => {
         const val = toFloat(row['价格']);
         return { date: row['日期'], value: val && val > 0 ? Number(val.toFixed(2)) : null };
       });
+    }
+    function updateHistoricalMax(rows, target, series) {
+      historicalMaxPrice = null;
+      historicalMaxDate = '';
+      const candidates = rows
+        .map(row => ({ price: toFloat(row['历史最高价']), date: asDateKey(row['最高价日期']) }))
+        .filter(item => item.price !== null && item.price > 0);
+      if (candidates.length) {
+        candidates.sort((a, b) => a.price - b.price || (a.date || '').localeCompare(b.date || ''));
+        const latest = candidates[candidates.length - 1];
+        historicalMaxPrice = Number(latest.price.toFixed(2));
+        historicalMaxDate = latest.date || '';
+      } else {
+        const fallbackMax = toFloat(target['历史最高价']);
+        if (fallbackMax !== null && fallbackMax > 0) {
+          historicalMaxPrice = Number(fallbackMax.toFixed(2));
+        }
+      }
+      if (historicalMaxPrice !== null && !historicalMaxDate) {
+        const match = [...series].reverse().find(p => p.value !== null && Math.abs(p.value - historicalMaxPrice) < 0.01);
+        historicalMaxDate = match ? match.date : '';
+      }
     }
 
     function buildSeriesFromInventory(target, inventoryHeaders) {
@@ -320,13 +346,16 @@
       const nullCount = displaySeries.length - quoted.length;
       const latest = [...quoted].reverse().find(Boolean) || null;
       const maxPoint = quoted.reduce((acc, cur) => (!acc || cur.value > acc.value ? cur : acc), null);
+      const displayMax = historicalMaxPrice !== null
+        ? { value: historicalMaxPrice, date: historicalMaxDate }
+        : maxPoint;
       let change = null;
       if (quoted.length >= 2) {
         change = quoted[quoted.length - 1].value - quoted[0].value;
       }
       document.getElementById('latest-price').textContent = latest ? money(latest.value) : '无报价';
-      document.getElementById('max-price').textContent = maxPoint ? money(maxPoint.value) : '无最高价';
-      document.getElementById('max-date').textContent = maxPoint ? maxPoint.date : '-';
+      document.getElementById('max-price').textContent = displayMax ? money(displayMax.value) : '无最高价';
+      document.getElementById('max-date').textContent = displayMax && displayMax.date ? displayMax.date : '-';
       const changeEl = document.getElementById('range-change');
       if (change === null) {
         changeEl.textContent = '-';
@@ -441,8 +470,10 @@
 
         const history = await loadHistory();
         let dataSeries = [];
+        let matchedHistory = [];
         if (history && history.rows && history.rows.length) {
-          dataSeries = buildSeriesFromHistory(history.rows, target);
+          matchedHistory = matchedHistoryRows(history.rows, target);
+          dataSeries = buildSeriesFromHistory(matchedHistory);
         }
         if (!dataSeries.length) {
           dataSeries = buildSeriesFromInventory(target, inventory.headers);
@@ -451,6 +482,7 @@
           document.getElementById('book-source').textContent = '数据源: price_history.csv';
         }
         fullSeries = dataSeries.sort((a, b) => a.date.localeCompare(b.date));
+        updateHistoricalMax(matchedHistory, target, fullSeries);
         renderToolbar();
         refresh();
         window.addEventListener('resize', () => chart && chart.resize());

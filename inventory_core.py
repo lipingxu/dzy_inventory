@@ -112,7 +112,7 @@ def _generate_record_id():
 
 
 def _row_identity(row):
-    """构建行匹配键：优先记录ID，其次 ISBN，最后书名。"""
+    """构建行匹配键：优先记录ID，其次 ISBN，最后仅在无 ISBN 时回退书名。"""
     record_id = (row.get(RECORD_ID_FIELD) or '').strip()
     if record_id:
         return f"id:{record_id}"
@@ -126,7 +126,7 @@ def _row_identity(row):
 
 
 def _manual_row_aliases(row):
-    """返回一个手工记录可用于匹配的备用键，优先 ISBN，再回退书名和记录ID。"""
+    """返回一个手工记录用于匹配的候选键：ISBN优先，且只有在无 ISBN 时才使用书名回退。"""
     aliases = []
     record_id = (row.get(RECORD_ID_FIELD) or '').strip()
     if record_id:
@@ -134,10 +134,45 @@ def _manual_row_aliases(row):
     isbn = _normalize_isbn(row.get('ISBN'))
     if isbn:
         aliases.append(f"isbn:{isbn}")
-    title = (row.get('书名') or '').strip()
-    if title:
-        aliases.append(f"title:{title}")
+    elif (row.get('书名') or '').strip():
+        aliases.append(f"title:{(row.get('书名') or '').strip()}")
     return aliases
+
+
+def _derive_business_state(row):
+    """根据购入/售出/赠送/丢弃状态重算最终业务状态，避免历史脏状态残留。"""
+    state = (row.get('状态') or '').strip()
+    tag = (row.get('处理标签') or '').strip()
+    buy_price = (row.get('购入价格') or '').strip()
+    sell_price = (row.get('售出价格') or '').strip()
+
+    if state in {GIFTED_STATE, DISCARDED_STATE} or tag in {GIFTED_STATE, DISCARDED_STATE}:
+        final_state = GIFTED_STATE if state == GIFTED_STATE or tag == GIFTED_STATE else DISCARDED_STATE
+        row['状态'] = final_state
+        row['售出价格'] = ''
+        row[SOLD_AT_FIELD] = ''
+        row['处理标签'] = final_state
+        return row
+
+    if sell_price:
+        row['状态'] = '已售'
+        row['处理标签'] = '已售'
+        return row
+
+    if buy_price:
+        row['状态'] = '持有'
+        if tag in {'待售', '已看'}:
+            row['处理标签'] = tag
+        else:
+            row['处理标签'] = tag or ''
+        return row
+
+    row['状态'] = '未持有'
+    if tag in {'待售', '已看'}:
+        row['处理标签'] = tag
+    else:
+        row['处理标签'] = ''
+    return row
 
 
 def _manual_row_score(row):
@@ -251,6 +286,7 @@ def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
             for h in extra_headers:
                 out[h] = (source.get(h) or '').strip()
 
+        _derive_business_state(out)
         manual_rows.append(out)
 
     # 保留 manual 里有但当前主表没有的记录（防误删历史手工记录）
@@ -322,31 +358,15 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
                     continue
                 merged_row[key] = value
 
-            state_value = (merged_row.get('状态') or '').strip()
-            tag_value = (merged_row.get('处理标签') or '').strip()
-            if state_value in {GIFTED_STATE, DISCARDED_STATE} or tag_value in {GIFTED_STATE, DISCARDED_STATE}:
-                final_state = GIFTED_STATE if state_value == GIFTED_STATE or tag_value == GIFTED_STATE else DISCARDED_STATE
-                merged_row['状态'] = final_state
-                merged_row['售出价格'] = ''
-                merged_row[SOLD_AT_FIELD] = ''
-                merged_row['处理标签'] = final_state
-                merged_rows.append(merged_row)
-                continue
+            _derive_business_state(merged_row)
+            if (merged_row.get('状态') or '').strip() == '已售' and not (merged_row.get(SOLD_AT_FIELD) or '').strip() and not was_sold:
+                merged_row[SOLD_AT_FIELD] = today
 
-            buy_price = (merged_row.get('购入价格') or '').strip()
-            sell_price = (merged_row.get('售出价格') or '').strip()
-            sold_at = (merged_row.get(SOLD_AT_FIELD) or '').strip()
-            if sell_price:
-                if not sold_at and not was_sold:
-                    merged_row[SOLD_AT_FIELD] = today
-                merged_row['状态'] = '已售'
-                merged_row['处理标签'] = '已售'
-            elif buy_price and merged_row.get('状态') != '已售':
-                merged_row[SOLD_AT_FIELD] = ''
-                merged_row['状态'] = '持有'
-            elif merged_row.get('状态') != '已售':
-                merged_row[SOLD_AT_FIELD] = ''
-                merged_row['状态'] = '未持有'
+        elif (merged_row.get('状态') or '').strip() in {GIFTED_STATE, DISCARDED_STATE}:
+            _derive_business_state(merged_row)
+
+        else:
+            _derive_business_state(merged_row)
 
         merged_rows.append(merged_row)
 
@@ -367,21 +387,7 @@ def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
             merged_row[RECORD_ID_FIELD] = _generate_record_id()
         merged_row['ISBN'] = _format_isbn_for_csv(merged_row.get('ISBN'))
 
-        state_value = (merged_row.get('状态') or '').strip()
-        tag_value = (merged_row.get('处理标签') or '').strip()
-        if state_value in {GIFTED_STATE, DISCARDED_STATE} or tag_value in {GIFTED_STATE, DISCARDED_STATE}:
-            final_state = GIFTED_STATE if state_value == GIFTED_STATE or tag_value == GIFTED_STATE else DISCARDED_STATE
-            merged_row['状态'] = final_state
-            merged_row['售出价格'] = ''
-            merged_row[SOLD_AT_FIELD] = ''
-            merged_row['处理标签'] = final_state
-        elif (merged_row.get('售出价格') or '').strip():
-            merged_row['状态'] = '已售'
-            merged_row['处理标签'] = '已售'
-        elif (merged_row.get('购入价格') or '').strip():
-            merged_row['状态'] = '持有'
-        else:
-            merged_row['状态'] = '未持有'
+        _derive_business_state(merged_row)
         merged_rows.append(merged_row)
 
     return merged_headers, merged_rows

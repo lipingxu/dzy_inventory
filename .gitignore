@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+chrome_data/
+latest_data.json
+last_checked.txt
+*.csv.tmp
+backups/

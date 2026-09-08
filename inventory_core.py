@@ -1,0 +1,1585 @@
+"""
+inventory_core.py — 图书资产管理系统共享核心逻辑
+
+由 auto_sync_data.py 等入口脚本导入，避免重复维护相同代码。
+"""
+
+import csv
+import html as html_lib
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+from datetime import datetime
+from urllib.parse import quote
+
+logging.basicConfig(format="%(levelname)s: %(message)s", level=logging.WARNING)
+logger = logging.getLogger(__name__)
+
+RECORD_ID_FIELD = '记录ID'
+SOLD_AT_FIELD = '售出时间'
+GIFTED_STATE = '已赠送'
+DISCARDED_STATE = '已丢弃'
+FINAL_STATES = {'持有', '未持有', '已售', GIFTED_STATE, DISCARDED_STATE, '已移除'}
+FIXED_HEADERS = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', SOLD_AT_FIELD, '历史最高价']
+BACKUP_DIR = "backups"
+MAX_BACKUPS = 30
+
+
+# ==========================================
+# 工具函数
+# ==========================================
+
+def format_num(val):
+    """将数字格式化为无多余小数点的字符串"""
+    if val == int(val):
+        return str(int(val))
+    return f"{val:g}"
+
+
+def get_clipboard_content():
+    """获取 macOS 剪贴板内容"""
+    try:
+        return subprocess.check_output(['pbpaste']).decode('utf-8').strip()
+    except Exception as e:
+        logger.warning("读取剪贴板失败: %s", e)
+        return None
+
+
+def _is_date_column(key):
+    """严格判断列名是否为 YYYY-MM-DD 格式的日期列"""
+    try:
+        datetime.strptime(key, '%Y-%m-%d')
+        return True
+    except ValueError:
+        return False
+
+
+# ==========================================
+# 数据处理与数据库 (CSV) 逻辑
+# ==========================================
+
+def _backup_csv(csv_path):
+    """同步前备份 CSV，最多保留 MAX_BACKUPS 份"""
+    if not os.path.exists(csv_path):
+        return
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(csv_path))[0]
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_path = os.path.join(BACKUP_DIR, f"{stem}-{timestamp}.csv")
+    shutil.copy2(csv_path, backup_path)
+
+    # 清理超出上限的旧备份（按文件名排序，删最旧的）
+    pattern = f"{stem}-"
+    all_backups = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.startswith(pattern) and f.endswith('.csv')]
+    )
+    for old in all_backups[:-MAX_BACKUPS]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old))
+        except Exception as e:
+            logger.warning("删除旧备份失败: %s", e)
+
+
+def _write_csv_atomic(csv_path, headers, rows):
+    """原子写入 CSV：先写临时文件，成功后再替换，防止崩溃损坏数据"""
+    tmp_path = csv_path + ".tmp"
+    with open(tmp_path, 'w', encoding='utf-8-sig', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(tmp_path, csv_path)
+
+
+def _normalize_isbn(value):
+    """统一 ISBN 比较口径，去空白并移除 Excel 保护前缀单引号。"""
+    isbn = (value or '').strip()
+    if isbn.startswith("'"):
+        isbn = isbn[1:]
+    return isbn.strip()
+
+
+def _format_isbn_for_csv(value):
+    """写回 CSV 时给 ISBN 加文本保护前缀，避免 Excel 科学计数法。"""
+    isbn = _normalize_isbn(value)
+    return f"'{isbn}" if isbn else ''
+
+
+def _generate_record_id():
+    return uuid.uuid4().hex
+
+
+def _row_identity(row):
+    """构建行匹配键：优先记录ID，其次 ISBN，最后仅在无 ISBN 时回退书名。"""
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        return f"id:{record_id}"
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        return f"isbn:{isbn}"
+    title = (row.get('书名') or '').strip()
+    if title:
+        return f"title:{title}"
+    return None
+
+
+def _content_identity(row):
+    """构建内容匹配键：用于缺少记录ID的旧数据迁移。"""
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        return f"isbn:{isbn}"
+    title = (row.get('书名') or '').strip()
+    if title:
+        return f"title:{title}"
+    return None
+
+
+def _manual_row_aliases(row):
+    """返回一个手工记录用于匹配的候选键：ISBN优先，且只有在无 ISBN 时才使用书名回退。"""
+    aliases = []
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        aliases.append(f"id:{record_id}")
+    isbn = _normalize_isbn(row.get('ISBN'))
+    if isbn:
+        aliases.append(f"isbn:{isbn}")
+    elif (row.get('书名') or '').strip():
+        aliases.append(f"title:{(row.get('书名') or '').strip()}")
+    return aliases
+
+
+def _find_manual_override(row, overrides_by_id, overrides_by_content):
+    """优先按记录ID匹配；已有记录ID时不再套用其他记录的同 ISBN 手工状态。"""
+    record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+    if record_id:
+        return overrides_by_id.get(record_id)
+    content_key = _content_identity(row)
+    return overrides_by_content.get(content_key) if content_key else None
+
+
+def _derive_business_state(row):
+    """根据购入/售出/赠送/丢弃状态重算最终业务状态，避免历史脏状态残留。"""
+    state = (row.get('状态') or '').strip()
+    tag = (row.get('处理标签') or '').strip()
+    buy_price = (row.get('购入价格') or '').strip()
+    sell_price = (row.get('售出价格') or '').strip()
+
+    if state in {GIFTED_STATE, DISCARDED_STATE} or tag in {GIFTED_STATE, DISCARDED_STATE}:
+        final_state = GIFTED_STATE if state == GIFTED_STATE or tag == GIFTED_STATE else DISCARDED_STATE
+        row['状态'] = final_state
+        row['售出价格'] = ''
+        row[SOLD_AT_FIELD] = ''
+        row['处理标签'] = final_state
+        return row
+
+    if sell_price:
+        row['状态'] = '已售'
+        row['处理标签'] = '已售'
+        return row
+
+    if buy_price:
+        row['状态'] = '持有'
+        if tag in {'待售', '已看'}:
+            row['处理标签'] = tag
+        else:
+            row['处理标签'] = tag or ''
+        return row
+
+    row['状态'] = '未持有'
+    if tag in {'待售', '已看'}:
+        row['处理标签'] = tag
+    else:
+        row['处理标签'] = ''
+    return row
+
+
+def _manual_row_score(row):
+    """用于比较同一本书的重复覆盖记录，优先保留更完整的一条。"""
+    score = 0
+    for key in ['购入价格', '售出价格', '状态', '处理标签', '备注', SOLD_AT_FIELD, '书名']:
+        if (row.get(key) or '').strip():
+            score += 1
+    return score
+
+
+def _merge_manual_duplicate_rows(manual_rows):
+    """合并重复覆盖记录；有记录ID时按记录ID保留多轮交易。"""
+    grouped = {}
+    for row in manual_rows:
+        record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+        key = f"id:{record_id}" if record_id else _content_identity(row)
+        if not key:
+            key = _row_identity(row)
+        grouped.setdefault(key, []).append(row)
+
+    merged = []
+    for group in grouped.values():
+        chosen = None
+        for row in group:
+            if chosen is None or _manual_row_score(row) > _manual_row_score(chosen):
+                chosen = dict(row)
+            else:
+                for field in set(chosen) | set(row):
+                    if field in (RECORD_ID_FIELD, 'ISBN', '书名'):
+                        continue
+                    chosen_val = (chosen.get(field) or '').strip()
+                    row_val = (row.get(field) or '').strip()
+                    if not chosen_val and row_val:
+                        chosen[field] = row_val
+                    elif field in {'状态', '处理标签'} and chosen_val in {'', '未持有'} and row_val:
+                        chosen[field] = row_val
+                    elif field in {'购入价格', '售出价格'} and chosen_val in {'', '0'} and row_val not in {'', '0'}:
+                        chosen[field] = row_val
+        merged.append(chosen)
+    return merged
+
+
+def _dedupe_business_duplicate_rows(rows):
+    """清理相同处置结果的重复行，保留最早出现的原始记录。"""
+    deduped = []
+    seen = set()
+    for row in rows:
+        state = (row.get('状态') or '').strip()
+        if state in {'已售', GIFTED_STATE, DISCARDED_STATE}:
+            key = (
+                state,
+                _normalize_isbn(row.get('ISBN')),
+                (row.get('书名') or '').strip(),
+                (row.get('购入价格') or '').strip(),
+                (row.get('售出价格') or '').strip(),
+                (row.get('处理标签') or '').strip(),
+                (row.get('备注') or '').strip(),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def load_manual_overrides(overrides_path='manual_overrides.csv'):
+    """读取手工覆盖文件，返回表头和数据行。"""
+    manual_headers = []
+    manual_rows = []
+    if not os.path.exists(overrides_path):
+        return manual_headers, manual_rows
+    try:
+        with open(overrides_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames:
+                manual_headers = [name.strip() for name in reader.fieldnames]
+            manual_rows = list(reader)
+    except Exception as e:
+        logger.warning("读取手工覆盖文件失败: %s", e)
+    return manual_headers, manual_rows
+
+
+def sync_manual_overrides(headers, rows, overrides_path='manual_overrides.csv'):
+    """同步手工覆盖文件：初始化、补新书、并保留人工字段。"""
+    base_headers = [RECORD_ID_FIELD, 'ISBN', '书名', '状态', '购入价格', '售出价格', SOLD_AT_FIELD, '处理标签', '备注']
+
+    existing_headers, existing_rows = load_manual_overrides(overrides_path)
+    extra_headers = [h for h in existing_headers if h not in base_headers]
+    manual_headers = base_headers + extra_headers
+
+    source_rows = []
+    for row in rows:
+        identity = _row_identity(row)
+        if not identity:
+            continue
+        source_rows.append((identity, row))
+
+    existing_by_id = {}
+    existing_by_content = {}
+    for row in existing_rows:
+        record_id = (row.get(RECORD_ID_FIELD) or '').strip()
+        if record_id:
+            existing_by_id.setdefault(record_id, row)
+        else:
+            content_key = _content_identity(row)
+            if content_key:
+                existing_by_content.setdefault(content_key, row)
+
+    manual_rows = []
+    seen_keys = set()
+    for identity, source in source_rows:
+        seen_keys.add(identity)
+        existing = _find_manual_override(source, existing_by_id, existing_by_content)
+
+        out = {h: '' for h in manual_headers}
+        out[RECORD_ID_FIELD] = (source.get(RECORD_ID_FIELD) or '').strip()
+        out['ISBN'] = _format_isbn_for_csv(source.get('ISBN'))
+        out['书名'] = (source.get('书名') or '').strip()
+
+        if existing:
+            for h in manual_headers:
+                if h in (RECORD_ID_FIELD, 'ISBN', '书名'):
+                    continue
+                # manual_overrides 作为人工主数据源：已有行按人工值原样保留（包括空值）
+                out[h] = (existing.get(h) or '').strip()
+        else:
+            out['状态'] = (source.get('状态') or '').strip()
+            out['购入价格'] = (source.get('购入价格') or '').strip()
+            out['售出价格'] = (source.get('售出价格') or '').strip()
+            out[SOLD_AT_FIELD] = (source.get(SOLD_AT_FIELD) or '').strip()
+            out['处理标签'] = (source.get('处理标签') or '').strip()
+            out['备注'] = (source.get('备注') or '').strip()
+            for h in extra_headers:
+                out[h] = (source.get(h) or '').strip()
+
+        _derive_business_state(out)
+        manual_rows.append(out)
+
+    # 保留 manual 里有但当前主表没有的记录（防误删历史手工记录）
+    retained_rows = [(f"id:{record_id}", row) for record_id, row in existing_by_id.items()]
+    retained_rows += list(existing_by_content.items())
+    for identity, existing in retained_rows:
+        if identity in seen_keys:
+            continue
+        out = {h: '' for h in manual_headers}
+        for h in manual_headers:
+            out[h] = (existing.get(h) or '').strip()
+        if not out.get(RECORD_ID_FIELD):
+            out[RECORD_ID_FIELD] = (existing.get(RECORD_ID_FIELD) or '').strip()
+        out['ISBN'] = _format_isbn_for_csv(existing.get('ISBN'))
+        manual_rows.append(out)
+
+    manual_rows = _merge_manual_duplicate_rows(manual_rows)
+    _write_csv_atomic(overrides_path, manual_headers, manual_rows)
+    return manual_headers, manual_rows
+
+
+def merge_manual_overrides(headers, rows, manual_headers, manual_rows):
+    """将手工覆盖文件合并到自动生成的行中。"""
+    if not manual_rows:
+        return headers, rows
+
+    extra_headers = []
+    for manual_row in manual_rows:
+        for key in manual_headers:
+            if key == 'ISBN' or key in headers or key in extra_headers:
+                continue
+            raw_value = manual_row.get(key, '')
+            value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
+            if value:
+                extra_headers.append(key)
+
+    merged_headers = headers + extra_headers
+
+    overrides_by_id = {}
+    overrides_by_content = {}
+    for manual_row in manual_rows:
+        record_id = (manual_row.get(RECORD_ID_FIELD) or '').strip()
+        if record_id:
+            overrides_by_id.setdefault(record_id, manual_row)
+        else:
+            content_key = _content_identity(manual_row)
+            if content_key:
+                overrides_by_content.setdefault(content_key, manual_row)
+
+    merged_rows = []
+    matched_manual_ids = set()
+    today = datetime.now().strftime('%Y-%m-%d')
+    for row in rows:
+        merged_row = dict(row)
+        was_sold = (
+            merged_row.get('状态') == '已售'
+            or bool((merged_row.get('售出价格') or '').strip())
+        )
+        override = _find_manual_override(merged_row, overrides_by_id, overrides_by_content)
+        if override:
+            matched_manual_ids.add(id(override))
+            for key, raw_value in override.items():
+                if key in (RECORD_ID_FIELD, 'ISBN'):
+                    continue
+                value = raw_value.strip() if isinstance(raw_value, str) else str(raw_value).strip() if raw_value is not None else ''
+                if (
+                    key == SOLD_AT_FIELD
+                    and was_sold
+                    and not value
+                    and (merged_row.get(SOLD_AT_FIELD) or '').strip()
+                ):
+                    continue
+                merged_row[key] = value
+
+            _derive_business_state(merged_row)
+            if (merged_row.get('状态') or '').strip() == '已售' and not (merged_row.get(SOLD_AT_FIELD) or '').strip() and not was_sold:
+                merged_row[SOLD_AT_FIELD] = today
+
+        elif (merged_row.get('状态') or '').strip() in {GIFTED_STATE, DISCARDED_STATE}:
+            _derive_business_state(merged_row)
+
+        else:
+            _derive_business_state(merged_row)
+
+        merged_rows.append(merged_row)
+
+    # manual 中可能保留了已离开上游观察列表的历史购入记录；这些记录仍需进入主表和报表。
+    for manual_row in manual_rows:
+        if id(manual_row) in matched_manual_ids:
+            continue
+        merged_row = {header: '' for header in merged_headers}
+        for key, raw_value in manual_row.items():
+            if key not in merged_headers:
+                continue
+            merged_row[key] = (
+                raw_value.strip()
+                if isinstance(raw_value, str)
+                else str(raw_value).strip() if raw_value is not None else ''
+            )
+        if not (merged_row.get(RECORD_ID_FIELD) or '').strip():
+            merged_row[RECORD_ID_FIELD] = _generate_record_id()
+        merged_row['ISBN'] = _format_isbn_for_csv(merged_row.get('ISBN'))
+
+        _derive_business_state(merged_row)
+        merged_rows.append(merged_row)
+
+    return merged_headers, _dedupe_business_duplicate_rows(merged_rows)
+
+
+def write_inventory_with_overrides(headers, rows, csv_path='inventory_auto.csv'):
+    """将合并后的主表数据原子写回 CSV，确保手工字段持久化到主表。"""
+    normalized_rows = []
+    for row in _dedupe_business_duplicate_rows(rows):
+        out = {h: row.get(h, '') for h in headers}
+        if not (out.get(RECORD_ID_FIELD) or '').strip():
+            out[RECORD_ID_FIELD] = _generate_record_id()
+        out['ISBN'] = _format_isbn_for_csv(out.get('ISBN'))
+        normalized_rows.append(out)
+    _write_csv_atomic(csv_path, headers, normalized_rows)
+
+
+def migrate_and_update_csv(books_data, capture_date, csv_path='inventory.csv'):
+    """更新 CSV，执行状态转换与草稿清理逻辑，写入前自动备份并原子写入"""
+
+    # 1. 迁移旧数据逻辑 (兼容最初的 history.csv)
+    if not os.path.exists(csv_path) and os.path.exists('history.csv'):
+        with open('history.csv', 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            old_rows = list(reader)
+            for r in old_rows:
+                r['状态'] = r.get('状态', '持有')
+                r['售出价格'] = r.get('售出价格', '')
+                r[SOLD_AT_FIELD] = r.get(SOLD_AT_FIELD, '')
+        temp_headers = FIXED_HEADERS + [h for h in old_rows[0].keys() if h not in FIXED_HEADERS] if old_rows else FIXED_HEADERS
+        _write_csv_atomic(csv_path, temp_headers, old_rows)
+
+    # 2. 读取当前仓库数据
+    rows = []
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames:
+                reader.fieldnames = [name.strip() for name in reader.fieldnames]
+            rows = list(reader)
+    for r in rows:
+        if not (r.get(RECORD_ID_FIELD) or '').strip():
+            r[RECORD_ID_FIELD] = _generate_record_id()
+
+    # 3. 确定日期列、自定义列并归一化
+    existing_dates = []
+    custom_headers = []
+    if rows:
+        all_keys = set()
+        for r in rows:
+            all_keys.update(r.keys())
+
+        for k in all_keys:
+            if k in FIXED_HEADERS:
+                continue
+            if _is_date_column(k.replace('/', '-').replace('/', '-')):
+                existing_dates.append(k)
+            else:
+                custom_headers.append(k)
+
+        # 日期归一化（统一为 YYYY-MM-DD）
+        cleaned_rows = []
+        for r in rows:
+            new_r = {}
+            for k, v in r.items():
+                if k == 'ISBN' and v and v.startswith("'"):
+                    v = v[1:]
+                if k in existing_dates:
+                    try:
+                        parts = k.replace('/', '-').split('-')
+                        new_k = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+                    except Exception as e:
+                        logger.warning("日期列归一化失败 '%s': %s", k, e)
+                        new_k = k
+                else:
+                    new_k = k
+                new_r[new_k] = v
+            cleaned_rows.append(new_r)
+        rows = cleaned_rows
+
+        # 重新整理归一化后的日期列
+        all_keys_new = set()
+        for r in rows:
+            all_keys_new.update(r.keys())
+        existing_dates = sorted([k for k in all_keys_new if k not in FIXED_HEADERS and k not in custom_headers])
+
+    try:
+        parts = capture_date.split('-')
+        capture_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+    except Exception as e:
+        logger.warning("capture_date 归一化失败: %s", e)
+
+    if capture_date and capture_date not in existing_dates:
+        existing_dates.append(capture_date)
+
+    existing_dates.sort()
+    tracked_dates = existing_dates[-7:] if len(existing_dates) > 7 else existing_dates
+    new_headers = FIXED_HEADERS + sorted(custom_headers) + tracked_dates
+
+    # 4. 匹配并更新
+    active_rows = [r for r in rows if r.get('状态') != '已售']
+    isbn_map = {}
+    title_map = {}
+    for r in active_rows:
+        isbn_key = _normalize_isbn(r.get('ISBN'))
+        title_key = (r.get('书名') or '').strip()
+        if isbn_key and isbn_key not in isbn_map:
+            isbn_map[isbn_key] = r
+        if title_key and title_key not in title_map:
+            title_map[title_key] = r
+
+    live_keys = set()
+    for book_id, info in books_data.items():
+        isbn = info['isbn'].strip() if info['isbn'] else ""
+        title = info['title'].strip()
+        price = info['price']
+
+        # 严格优先 ISBN 匹配；只有当本书没有 ISBN 时才回退按书名匹配，
+        # 避免同名不同版本（如两本《三国演义》）被错误合并到同一行。
+        if isbn:
+            matched_row = isbn_map.get(isbn)
+        else:
+            matched_row = title_map.get(title)
+        key = (isbn or title).strip()
+        live_keys.add(key)
+
+        if matched_row:
+            if isbn:
+                matched_row['ISBN'] = isbn
+            if not (matched_row.get('书名') or '').strip():
+                matched_row['书名'] = title
+            if matched_row.get('状态') == '已移除':
+                matched_row['状态'] = '未持有'
+            matched_row[capture_date] = price
+        else:
+            new_row = {h: '' for h in new_headers}
+            new_row.update({
+                RECORD_ID_FIELD: _generate_record_id(),
+                'ISBN': isbn, '书名': title, '状态': '未持有',
+                '购入价格': '', '售出价格': '', SOLD_AT_FIELD: '', '历史最高价': '0.00',
+                capture_date: price
+            })
+            rows.append(new_row)
+
+    # 5. 状态转换与草稿清理
+    final_data = []
+    for row in rows:
+        key = (_normalize_isbn(row.get('ISBN')) or (row.get('书名') or '')).strip()
+        if not (row.get(RECORD_ID_FIELD) or '').strip():
+            row[RECORD_ID_FIELD] = _generate_record_id()
+
+        # 规则 A：自动转"已售"
+        try:
+            if float(row.get('售出价格') or 0) > 0:
+                if not (row.get(SOLD_AT_FIELD) or '').strip():
+                    row[SOLD_AT_FIELD] = capture_date
+                row['状态'] = '已售'
+                row['处理标签'] = '已售'
+        except Exception as e:
+            logger.warning("售出价格解析失败 '%s': %s", row.get('书名'), e)
+
+        # 赠送/丢弃不算卖出，但也不属于持有
+        if (row.get('状态') or '').strip() in {GIFTED_STATE, DISCARDED_STATE}:
+            row[SOLD_AT_FIELD] = ''
+            row['售出价格'] = ''
+
+        # 核心逻辑：区分"持有"与"未持有"
+        if row['状态'] not in ['已售', '已移除', GIFTED_STATE, DISCARDED_STATE]:
+            bp_raw = row.get('购入价格', '').strip()
+            row['状态'] = '持有' if bp_raw != '' else '未持有'
+            row[SOLD_AT_FIELD] = ''
+
+        # 规则 B：识别"已移除"（已赠送/已丢弃单独保留，不应被归并到已移除）
+        if row.get('状态') not in {'已售', GIFTED_STATE, DISCARDED_STATE} and key not in live_keys:
+            bp_raw = row.get('购入价格', '').strip()
+            sp_raw = row.get('售出价格', '').strip()
+            if bp_raw == '' and sp_raw == '' and row.get('状态') in ['持有', '未持有']:
+                row['状态'] = '已移除'
+
+        # 维护历史最高价：只允许日期价格列参与，避免备注等自定义列中的数字污染最高价。
+        old_max = float(row.get('历史最高价') or 0)
+        current_prices = []
+        for price_date in tracked_dates:
+            v = row.get(price_date)
+            if v:
+                try:
+                    current_prices.append(float(v))
+                except ValueError:
+                    pass
+        date_max = max(current_prices) if current_prices else 0
+        note_value = (row.get('备注') or '').strip()
+        try:
+            note_number = float(note_value)
+        except ValueError:
+            note_number = None
+
+        # 修正旧版本留下的污染值：只有最高价恰好等于纯数字备注且高于所有日期价格时才回退。
+        if note_number is not None and old_max == note_number and old_max > date_max:
+            old_max = date_max
+        new_max = max(old_max, date_max)
+
+        out_row = {h: row.get(h, '') for h in new_headers}
+        out_row['历史最高价'] = f"{new_max:.2f}"
+
+        if out_row.get('ISBN') and not out_row['ISBN'].startswith("'"):
+            out_row['ISBN'] = f"'{out_row['ISBN']}"
+
+        for d in tracked_dates:
+            if out_row.get(d):
+                try:
+                    out_row[d] = f"{float(out_row[d]):.2f}"
+                except ValueError:
+                    pass
+        final_data.append(out_row)
+
+    # 6. 备份 + 原子写入
+    _backup_csv(csv_path)
+    _write_csv_atomic(csv_path, new_headers, final_data)
+
+    return new_headers, final_data
+
+
+def load_old_prices(csv_path):
+    """读取 CSV 中最近一次日期列的价格快照，用于计算变动差值"""
+    old_prices = {}
+    if not os.path.exists(csv_path):
+        return old_prices
+    try:
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                if r.get('状态') == '已售':
+                    continue
+                date_cols = [k for k in r.keys() if _is_date_column(k)]
+                if date_cols:
+                    last_date = sorted(date_cols)[-1]
+                    if r.get(last_date):
+                        try:
+                            key = _normalize_isbn(r.get('ISBN', '')) or r.get('书名', '')
+                            old_prices[key] = float(r[last_date])
+                        except ValueError:
+                            pass
+    except Exception as e:
+        logger.warning("读取价格快照失败: %s", e)
+    return old_prices
+
+
+def read_price_history(history_path='price_history.csv'):
+    """读取长期价格历史，允许在没有历史文件时回退到空列表。"""
+    rows = []
+    if not os.path.exists(history_path):
+        return rows
+    try:
+        with open(history_path, 'r', encoding='utf-8-sig', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                rows.append(row)
+    except Exception as e:
+        logger.warning("读取 price_history 失败: %s", e)
+    return rows
+
+
+def sync_price_history(rows, capture_date, history_path='price_history.csv', retention_days=365):
+    """维护按天价格历史，价格为空表示当日无收购报价；同时保留历史最高价字段用于过渡。"""
+    try:
+        normalized_date = datetime.strptime(capture_date, '%Y-%m-%d').strftime('%Y-%m-%d')
+    except ValueError:
+        logger.warning("price_history 日期格式无效: %s", capture_date)
+        return
+
+    cutoff = datetime.strptime(normalized_date, '%Y-%m-%d').date().toordinal() - retention_days + 1
+    headers = ['日期', RECORD_ID_FIELD, 'ISBN', '书名', '价格', '历史最高价', '最高价日期']
+    existing_rows = []
+    if os.path.exists(history_path):
+        existing_rows = read_price_history(history_path)
+        filtered = []
+        for row in existing_rows:
+            day = (row.get('日期') or '').strip()
+            if not day:
+                continue
+            try:
+                day_ord = datetime.strptime(day, '%Y-%m-%d').date().toordinal()
+            except ValueError:
+                continue
+            if day_ord < cutoff:
+                continue
+            filtered.append(row)
+        existing_rows = filtered
+
+    def _history_identity(row):
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+        return rid or isbn or title
+
+    def _row_max_info(row, date_values):
+        try:
+            stored_max = float(row.get('历史最高价') or 0)
+        except (TypeError, ValueError):
+            stored_max = 0
+        date_max = max((value for _, value in date_values), default=0)
+        max_price = stored_max if stored_max > 0 else date_max
+        max_date = ''
+        if max_price > 0:
+            matched_dates = [day for day, value in date_values if abs(value - max_price) < 0.01]
+            if matched_dates:
+                max_date = sorted(matched_dates)[-1]
+        return max_price, max_date
+
+    index_map = {}
+    for idx, row in enumerate(existing_rows):
+        identity = _history_identity(row)
+        if not identity:
+            continue
+        index_map[(row.get('日期', '').strip(), identity)] = idx
+
+    for row in rows:
+        identity = _history_identity(row)
+        if not identity:
+            continue
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+
+        date_values = []
+        for key, value in row.items():
+            if not _is_date_column(key):
+                continue
+            try:
+                val = float(value or 0)
+            except (TypeError, ValueError):
+                continue
+            if val <= 0:
+                continue
+            date_values.append((key, val))
+
+        max_price, max_date = _row_max_info(row, date_values)
+        date_keys = {date_key for date_key, _ in date_values}
+        date_keys.add(normalized_date)
+        price_by_date = {date_key: price_value for date_key, price_value in date_values}
+
+        for date_key in sorted(date_keys):
+            try:
+                day_ord = datetime.strptime(date_key, '%Y-%m-%d').date().toordinal()
+            except ValueError:
+                continue
+            if day_ord < cutoff:
+                continue
+            price_value = price_by_date.get(date_key)
+            price_str = f"{float(price_value):.2f}" if price_value and price_value > 0 else ''
+            out = {
+                '日期': date_key,
+                RECORD_ID_FIELD: rid,
+                'ISBN': _format_isbn_for_csv(isbn),
+                '书名': title,
+                '价格': price_str,
+                '历史最高价': f"{max_price:.2f}" if max_price > 0 else '',
+                '最高价日期': max_date,
+            }
+            key = (date_key, identity)
+            if key in index_map:
+                existing_rows[index_map[key]] = out
+            else:
+                existing_rows.append(out)
+                index_map[key] = len(existing_rows) - 1
+
+    normalized_rows = []
+    for row in existing_rows:
+        normalized_rows.append({header: row.get(header, '') for header in headers})
+
+    normalized_rows.sort(key=lambda r: (r.get('日期', ''), (r.get(RECORD_ID_FIELD) or ''), _normalize_isbn(r.get('ISBN')), (r.get('书名') or '')))
+    _write_csv_atomic(history_path, headers, normalized_rows)
+
+
+def print_change_summary(books_data, old_prices):
+    """打印行情变动摘要"""
+    changes = []
+    total_diff = 0
+    for b_info in books_data.values():
+        key = b_info['isbn'] or b_info['title']
+        if key in old_prices:
+            diff = b_info['price'] - old_prices[key]
+            if diff != 0:
+                changes.append(
+                    f"  - {b_info['title']}: {old_prices[key]:.2f} -> {b_info['price']:.2f} "
+                    f"({'+' if diff > 0 else ''}{diff:.2f})"
+                )
+                total_diff += diff
+    if changes:
+        print("\n📈 --- 行情变动提醒 ---")
+        print("\n".join(changes))
+        print(f"💰 总估值变动: {'+' if total_diff >= 0 else ''}{total_diff:.2f} 元")
+
+
+# ==========================================
+# 报表生成逻辑 (HTML)
+# ==========================================
+
+def generate_report(headers, rows, books_data, report_path='report.html', ordered_ids=None):
+    fixed_fields = FIXED_HEADERS
+    date_headers = [h for h in headers if _is_date_column(h)]
+    custom_headers = [h for h in headers if h not in fixed_fields and h not in date_headers]
+    display_custom_headers = [h for h in custom_headers if h not in {'处理标签', '备注'}]
+    if '处理标签' in custom_headers:
+        display_custom_headers.append('处理标签')
+    if '备注' in custom_headers:
+        display_custom_headers.append('备注')
+    report_tail_headers = ['状态'] + display_custom_headers
+
+    last_checked_text = ""
+    try:
+        if os.path.exists('last_checked.txt'):
+            with open('last_checked.txt', 'r', encoding='utf-8') as _f:
+                last_checked_text = _f.read().strip()
+    except Exception as e:
+        logger.warning("读取 last_checked.txt 失败: %s", e)
+
+    latest_date = date_headers[-1] if date_headers else None
+
+    history_rows = read_price_history()
+    history_lookup = {}
+    for hrow in history_rows:
+        hdate = (hrow.get('日期') or '').strip()
+        if not hdate:
+            continue
+        rid = (hrow.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(hrow.get('ISBN'))
+        title = (hrow.get('书名') or '').strip()
+        identity = rid or isbn or title
+        if identity:
+            history_lookup.setdefault(identity, []).append(hrow)
+
+    def _history_for_row(row):
+        rid = (row.get(RECORD_ID_FIELD) or '').strip()
+        isbn = _normalize_isbn(row.get('ISBN'))
+        title = (row.get('书名') or '').strip()
+        identity = rid or isbn or title
+        return history_lookup.get(identity, [])
+
+    def _history_latest_price(row):
+        history_values = []
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('价格') or 0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                history_values.append((hrow.get('日期') or '', val))
+        if not history_values:
+            return None, None
+        history_values.sort(key=lambda item: item[0])
+        return history_values[-1][1], history_values[-1][0]
+
+    def _history_max_price(row):
+        max_val = 0.0
+        max_date = ''
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('历史最高价') or 0)
+            except (TypeError, ValueError):
+                val = 0
+            if val > max_val:
+                max_val = val
+                max_date = hrow.get('最高价日期') or ''
+        if max_val > 0:
+            return max_val, max_date
+        vals = []
+        for hrow in _history_for_row(row):
+            try:
+                val = float(hrow.get('价格') or 0)
+            except (TypeError, ValueError):
+                continue
+            if val > 0:
+                vals.append((hrow.get('日期') or '', val))
+        if vals:
+            vals.sort(key=lambda item: item[0])
+            return max(v for _, v in vals), max((d for d, v in vals if v == max(v for _, v in vals)), default='')
+        return None, None
+
+    inventory_rows = [r for r in rows if r.get('状态') in ['持有', '未持有']]
+    sold_rows = [r for r in rows if r.get('状态') == '已售']
+    sold_rows.sort(key=lambda row: ((row.get(SOLD_AT_FIELD) or '').strip() or '9999-12-31', (row.get('书名') or '').strip()))
+    gifted_rows = [r for r in rows if r.get('状态') == GIFTED_STATE]
+    discarded_rows = [r for r in rows if r.get('状态') == DISCARDED_STATE]
+
+    # 1. 计算核心指标
+    purchased_rows = [r for r in inventory_rows if r.get('状态') == '持有']
+    ever_purchased_rows = [r for r in rows if (r.get('购入价格') or '').strip() != '']
+    observing_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
+
+    current_holding_cost = 0
+    total_valuation_purchased = 0
+    for r in purchased_rows:
+        try:
+            cost = float(r.get('购入价格') or 0)
+            latest_price = float(r.get(latest_date) or 0) if latest_date else 0
+            current_holding_cost += cost
+            total_valuation_purchased += latest_price
+        except (ValueError, TypeError):
+            pass
+
+    floating_profit = total_valuation_purchased - current_holding_cost
+
+    total_buy_amount = 0
+    for r in ever_purchased_rows:
+        try:
+            total_buy_amount += float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+
+    total_sell_amount = 0
+    for r in sold_rows:
+        try:
+            total_sell_amount += float(r.get('售出价格') or 0)
+        except (ValueError, TypeError):
+            pass
+
+    sold_realized_profit = 0
+    for r in sold_rows:
+        try:
+            sold_realized_profit += float(r.get('售出价格') or 0) - float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+
+    total_realized_profit = sold_realized_profit
+    for r in gifted_rows:
+        try:
+            total_realized_profit -= float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+    for r in discarded_rows:
+        try:
+            total_realized_profit -= float(r.get('购入价格') or 0)
+        except (ValueError, TypeError):
+            pass
+
+    # 2. 盈亏趋势图数据
+    trend_data = []
+    for d in date_headers:
+        day_profit = 0
+        for r in purchased_rows:
+            try:
+                cost = float(r.get('购入价格') or 0)
+                price = float(r.get(d) or 0)
+                day_profit += price - cost
+            except (ValueError, TypeError):
+                pass
+        d_short = d[5:] if len(d) > 5 else d
+        trend_data.append({"date": d_short, "value": round(day_profit, 2)})
+
+    # 3. 建立快速查找映射
+    lookup_map = {}
+    for b in books_data.values():
+        if b.get('isbn'):
+            lookup_map[b['isbn']] = b
+        if b.get('title'):
+            lookup_map[b['title']] = b
+
+    order_map = {}
+    if ordered_ids:
+        for idx, bid in enumerate(ordered_ids):
+            b_info = books_data.get(bid, {})
+            if b_info.get('isbn'):
+                order_map[b_info['isbn']] = idx
+            if b_info.get('title'):
+                order_map[b_info['title']] = idx
+
+    def _latest_price_value(row):
+        """主报表只认最新日期列；历史报价仅用于最高价和详情页。"""
+        if not latest_date:
+            return 0
+        raw = row.get(latest_date, "0")
+        try:
+            return float(raw) if raw else 0
+        except (ValueError, TypeError):
+            return 0
+
+    purchased_rows.sort(
+        key=lambda row: (
+            1 if _latest_price_value(row) == 0 else 0,
+            order_map.get(row['ISBN']) if row['ISBN'] in order_map else order_map.get(row['书名'], 999999),
+        )
+    )
+
+    processing_rows = [
+        r for r in purchased_rows
+        if r.get('状态') == '持有' and (r.get('处理标签') or '').strip() in ['待售', '已看']
+    ]
+    observing_panel_rows = [r for r in inventory_rows if r.get('状态') == '未持有']
+    table_col_count = 6 + len(date_headers) + len(report_tail_headers)
+
+    def _date_header_html(table_id, date_value, col_idx):
+        try:
+            month, day = date_value[5:].split('-', 1)
+            d_text = f"{int(month)}/{int(day)}"
+        except (ValueError, IndexError):
+            d_text = date_value
+        latest_class = " latest-price-col" if date_value == latest_date else ""
+        label = f"<span class='today-price-label'>今日</span>{d_text}" if date_value == latest_date else d_text
+        return f"<th class='sortable price-date-col{latest_class}' onclick=\"sortTable('{table_id}', {col_idx}, 'num')\">{label}</th>"
+
+    def _custom_header_html(table_id, col_idx, header_name):
+        display_name = header_name
+        th_class = "col-status" if header_name in {'状态', '处理标签'} else ("col-note" if header_name == '备注' else "")
+        class_attr = f" class='sortable {th_class}'" if th_class else " class='sortable'"
+        return f"<th{class_attr} onclick=\"sortTable('{table_id}', {col_idx})\">{display_name}</th>"
+
+    def _table_headers_html(table_id):
+        headers_html = [
+            f"<th onclick=\"sortTable('{table_id}', 0)\">ISBN</th>",
+            f"<th class='title-col' onclick=\"sortTable('{table_id}', 1)\">书名</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 2, 'num')\">购入价</th>",
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', 3, 'num')\">最高价</th>",
+        ]
+        for i, d in enumerate(date_headers):
+            headers_html.append(_date_header_html(table_id, d, 4+i))
+
+        trend_col_idx = 4 + len(date_headers)
+        headers_html.append(
+            f"<th class='sortable' onclick=\"sortTable('{table_id}', {trend_col_idx}, 'num')\">估算盈亏</th>"
+        )
+        headers_html.append(
+            f"<th class='sortable trend-col' onclick=\"sortTable('{table_id}', {trend_col_idx+1}, 'num')\">7天趋势</th>"
+        )
+        for i, ch in enumerate(report_tail_headers):
+            headers_html.append(_custom_header_html(table_id, trend_col_idx + 2 + i, ch))
+        return "".join(headers_html)
+
+    def _render_report_tail_cell(header_name, raw_value):
+        value = raw_value or '-'
+        escaped_value = html_lib.escape(value)
+        title_attr = f" title='{html_lib.escape(value, quote=True)}'" if value != '-' else ""
+        if header_name == '状态':
+            state_class = {
+                '持有': 'state-held',
+                '未持有': 'state-watching',
+                '已售': 'state-sold',
+                GIFTED_STATE: 'state-gifted',
+                DISCARDED_STATE: 'state-discarded',
+            }.get(value, 'state-default')
+            content = f"<span class='dashboard-pill state-pill {state_class}'>{escaped_value}</span>"
+            return f"<td class='col-status'{title_attr}>{content}</td>"
+        if header_name == '处理标签':
+            tag_class = {
+                '待售': 'tag-pending',
+                '已看': 'tag-read',
+            }.get(value, 'tag-default')
+            content = escaped_value if value == '-' else f"<span class='dashboard-pill tag-pill {tag_class}'>{escaped_value}</span>"
+            return f"<td class='col-status'{title_attr}>{content}</td>"
+        if header_name == '备注':
+            content = escaped_value if value == '-' else f"<span class='note-cell-content'>📝 {escaped_value}</span>"
+            return f"<td class='col-note'{title_attr}>{content}</td>"
+        return f"<td>{escaped_value}</td>"
+
+    def _build_inventory_rows_html(target_rows):
+        html_rows = []
+        for r in target_rows:
+            latest_p = _latest_price_value(r)
+
+            history_max, history_max_date = _history_max_price(r)
+            max_p = history_max if history_max is not None else float(r['历史最高价'] or 0)
+            if latest_p == 0:
+                tr_cls = "class='gray'"
+            elif latest_p > 0 and abs(latest_p - max_p) < 0.01:
+                tr_cls = "class='at-peak'"
+            else:
+                tr_cls = ""
+
+            badges = ""
+            at_peak = latest_p > 0 and abs(latest_p - max_p) < 0.01
+            note_text = (r.get('备注') or '').strip()
+            if note_text:
+                note_display = html_lib.escape(note_text).replace('\n', ' ')
+                note_display = note_display[:18] + '…' if len(note_display) > 18 else note_display
+                badges += f"<span class='badge note-badge' title='{html_lib.escape(note_text, quote=True)}'>注:{note_display}</span>"
+            if at_peak:
+                badges += "<span class='badge badge-peak'>\U0001f525</span>"
+            if r.get('状态') == '未持有':
+                badges += "<span class='badge' style='background:#f1f5f9; color:#94a3b8; border:1px solid #e2e8f0;'>观察</span>"
+
+            raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+            current_book_info = lookup_map.get(raw_isbn) or lookup_map.get(r['书名'])
+            if current_book_info:
+                if current_book_info.get('subsidy', 0) > 0:
+                    badges += f"<span class='badge sb'>已加价{format_num(current_book_info['subsidy'])}</span>"
+                sc = current_book_info.get('state_change')
+                if sc:
+                    tp = sc.get('type')
+                    prev_y = sc.get('previousViewAcquirePrice', 0) / 100
+                    if tp == 'refused_to_passed':
+                        badges += "<span class='badge up'>新增收购</span>"
+                    elif tp == 'increase_price':
+                        badges += f"<span class='badge up'>涨{format_num(abs(latest_p - prev_y))} ↑</span>"
+                    elif tp == 'decrease_price':
+                        badges += f"<span class='badge dn'>降{format_num(abs(latest_p - prev_y))} ↓</span>"
+
+            record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+            title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+            row_html = f"<tr {tr_cls}><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}{badges}</td>"
+            max_cls = 'p-peak' if at_peak else 'p-max'
+            display_max = max_p if max_p and max_p > 0 else (r['历史最高价'] or '0')
+            row_html += f"<td>{('¥' + r['购入价格']) if r['购入价格'] else '-'}</td><td><span class='{max_cls}'>¥{display_max}</span></td>"
+
+            ps = []
+            for i, d in enumerate(date_headers):
+                v = r.get(d, '')
+                classes = []
+                if d == latest_date:
+                    classes.append('latest-price-cell')
+                if i == len(date_headers) - 1 and v and float(v) > 0 and float(v) < max_p:
+                    classes.append('p-low')
+                class_attr = f"class='{ ' '.join(classes) }'" if classes else ''
+                val = 0
+                if v:
+                    try:
+                        val = float(v)
+                        ps.append(val)
+                    except ValueError:
+                        pass
+                row_html += f"<td {class_attr} data-val='{val}'>{('¥' + v) if v else '-'}</td>"
+
+            est_val = 0
+            est_html = "-"
+            if r['购入价格'] and latest_p > 0:
+                try:
+                    est_val = latest_p - float(r['购入价格'])
+                    est_html = f"<span class='{'profit-p' if est_val>=0 else 'profit-n'}'>{'+' if est_val>=0 else ''}{est_val:.2f}</span>"
+                except (ValueError, TypeError):
+                    pass
+            row_html += f"<td data-val='{est_val}'>{est_html}</td>"
+
+            trnd_val = 0
+            trnd_html = "-"
+            if len(ps) >= 2:
+                trnd_val = ps[-1] - ps[0]
+                if trnd_val > 0:
+                    trnd_html = f"<span class='profit-p'>↑{trnd_val:.2f}</span>"
+                elif trnd_val < 0:
+                    trnd_html = f"<span class='profit-n'>↓{abs(trnd_val):.2f}</span>"
+            row_html += f"<td class='trend-col' data-val='{trnd_val}'>{trnd_html}</td>"
+
+            for ch in report_tail_headers:
+                row_html += _render_report_tail_cell(ch, r.get(ch, '-'))
+
+            row_html += "</tr>"
+            html_rows.append(row_html)
+        return "".join(html_rows)
+
+    inventory_table_headers = _table_headers_html('inventory-table')
+    processing_table_headers = _table_headers_html('processing-table')
+    observing_table_headers = _table_headers_html('observing-table')
+
+    inventory_rows_html = _build_inventory_rows_html(purchased_rows)
+    processing_rows_html = _build_inventory_rows_html(processing_rows)
+    observing_rows_html = _build_inventory_rows_html(observing_panel_rows)
+
+    if not processing_rows_html:
+        processing_rows_html = f"<tr><td colspan='{table_col_count}' class='empty-hint'>暂无“待售 / 已看”的持有书籍（可在 manual_overrides.csv 的“处理标签”列填写：待售、已看）。</td></tr>"
+    if not observing_rows_html:
+        observing_rows_html = f"<tr><td colspan='{table_col_count}' class='empty-hint'>暂无观察中的书籍。</td></tr>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>图书资产管理系统</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 20px; background: #f4f7f9; color: #334155; }}
+        .header-section {{ display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 20px; }}
+        h1 {{ margin: 0; font-size: 1.8rem; color: #1e293b; }}
+        
+        .update-badge {{ 
+            background: #fff; color: #64748b; padding: 6px 15px; border-radius: 50px; 
+            font-size: 0.8rem; border: 1px solid #e2e8f0; display: flex; align-items: center;
+        }}
+
+        .summary-box {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px; }}
+        .card {{ background: #fff; padding: 18px; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .card-label {{ font-size: 0.8rem; color: #64748b; margin-bottom: 8px; font-weight: 500; }}
+        .card-val {{ font-size: 1.4rem; font-weight: 800; color: #0f172a; }}
+        .val-p {{ color: #ef4444; }}
+        .val-n {{ color: #22c55e; }}
+        .details-card {{ background: #fff; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; overflow: hidden; }}
+        .details-card summary {{ list-style: none; cursor: pointer; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; font-weight: 700; color: #1e293b; }}
+        .details-card summary::-webkit-details-marker {{ display: none; }}
+        .details-card summary:hover {{ background: #f8fafc; }}
+        .details-hint {{ font-size: 0.85rem; font-weight: 500; color: #64748b; }}
+        .details-card summary::after {{ content: "展开"; font-size: 0.85rem; color: #3b82f6; font-weight: 600; }}
+        .details-card[open] summary::after {{ content: "收起"; }}
+        .details-body {{ padding: 0 18px 18px; border-top: 1px solid #f1f5f9; }}
+        .details-note {{ margin: 14px 0 0; color: #64748b; font-size: 0.85rem; }}
+        .empty-hint {{ text-align: center; color: #94a3b8; font-size: 0.9rem; padding: 20px 10px; }}
+
+        #chart-container {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; height: 300px; }}
+
+        .section {{ background: #fff; padding: 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; }}
+        .section-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }}
+        h2 {{ font-size: 1.1rem; color: #1e293b; margin: 0; border-left: 4px solid #3b82f6; padding-left: 10px; }}
+        
+        .search-box {{ padding: 8px 15px; border-radius: 8px; border: 1px solid #e2e8f0; width: 250px; outline: none; transition: all 0.2s; }}
+        .search-box:focus {{ border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.1); }}
+
+        .table-wrapper {{ overflow-x: auto; }}
+        table {{ width: 100%; border-collapse: collapse; font-size: 0.9rem; min-width: 920px; }}
+        th, td {{ padding: 12px; text-align: center; border-bottom: 1px solid #f1f5f9; }}
+        th {{ background: #f8fafc; color: #64748b; font-weight: 600; cursor: pointer; position: relative; white-space: nowrap; }}
+        th:hover {{ background: #f1f5f9; }}
+        th.sortable::after {{ content: "↕"; color: #cbd5e1; margin-left: 5px; font-size: 0.7rem; }}
+        th.sort-asc::after {{ content: "↑"; color: #3b82f6; }}
+        th.sort-desc::after {{ content: "↓"; color: #3b82f6; }}
+        
+        .title-col {{ text-align: left; max-width: 280px; font-weight: 600; color: #0f172a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+        .book-link {{ color: #0f172a; text-decoration: none; border-bottom: 1px solid #cbd5e1; }}
+        .book-link:hover {{ color: #2563eb; border-color: #93c5fd; }}
+        .price-date-col {{ min-width: 56px; padding-left: 7px; padding-right: 7px; }}
+        .latest-price-col {{ background: #dbeafe; color: #1d4ed8; box-shadow: inset 0 -2px #3b82f6; }}
+        .latest-price-col:hover {{ background: #bfdbfe; }}
+        .today-price-label {{ display: block; margin-bottom: 2px; font-size: 0.64rem; color: #2563eb; font-weight: 800; letter-spacing: 0.04em; }}
+        .latest-price-cell {{ background: #eff6ff; color: #1e3a8a; font-weight: 800; box-shadow: inset 1px 0 #bfdbfe, inset -1px 0 #bfdbfe; }}
+        tr:hover .latest-price-cell {{ background: #dbeafe; }}
+        .trend-col {{ min-width: 105px; }}
+        .col-status {{ min-width: 86px; max-width: 100px; white-space: nowrap; }}
+        .col-note {{ text-align: left; min-width: 240px; max-width: 320px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+        .dashboard-pill {{ display: inline-flex; align-items: center; justify-content: center; min-width: 46px; padding: 3px 9px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; border: 1px solid transparent; }}
+        .state-held {{ color: #1d4ed8; background: #dbeafe; border-color: #bfdbfe; }}
+        .state-watching {{ color: #64748b; background: #f1f5f9; border-color: #e2e8f0; }}
+        .state-sold {{ color: #15803d; background: #dcfce7; border-color: #bbf7d0; }}
+        .state-gifted {{ color: #7e22ce; background: #f3e8ff; border-color: #e9d5ff; }}
+        .state-discarded {{ color: #b91c1c; background: #fee2e2; border-color: #fecaca; }}
+        .state-default {{ color: #475569; background: #f8fafc; border-color: #e2e8f0; }}
+        .tag-pending {{ color: #b45309; background: #fef3c7; border-color: #fde68a; }}
+        .tag-read {{ color: #0369a1; background: #e0f2fe; border-color: #bae6fd; }}
+        .tag-default {{ color: #475569; background: #f8fafc; border-color: #e2e8f0; }}
+        .note-cell-content {{ display: block; padding: 5px 8px; border-radius: 6px; color: #075985; background: #f0f9ff; border-left: 3px solid #38bdf8; overflow: hidden; text-overflow: ellipsis; }}
+        .badge {{ font-size: 0.7rem; padding: 2px 6px; border-radius: 4px; margin-left: 5px; font-weight: 700; }}
+        .note-badge {{
+            display: inline-block; vertical-align: middle; background: linear-gradient(135deg, #fef3c7, #e0f2fe);
+            color: #075985; border: 1px solid #7dd3fc; box-shadow: 0 1px 3px rgba(14, 116, 144, 0.12);
+            cursor: help; transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }}
+        .note-badge:hover {{ transform: translateY(-1px); box-shadow: 0 4px 10px rgba(14, 116, 144, 0.18); }}
+        .sb {{ background: #fee2e2; color: #ef4444; }}
+        .up {{ background: #fee2e2; color: #ef4444; }}
+        .dn {{ background: #dcfce7; color: #22c55e; }}
+        .col-note:hover {{ background: #f8fafc; color: #0f172a; }}
+        
+        .gray td {{ color: #94a3b8 !important; opacity: 0.8; }}
+        .p-low {{ color: #22c55e; font-weight: 700; }}
+        .p-max {{ color: #ef4444; font-weight: 700; background: #fef2f2; padding: 2px 6px; border-radius: 4px; }}
+        .profit-p {{ color: #ef4444; font-weight: 700; }}
+        .profit-n {{ color: #22c55e; font-weight: 700; }}
+        tr.at-peak td {{ background: #fffbeb !important; }}
+        .badge-peak {{ background: #f59e0b; color: #fff; }}
+        .p-peak {{ color: #b45309; font-weight: 800; background: #fef3c7; padding: 2px 6px; border-radius: 4px; }}
+    </style>
+</head>
+<body>
+    <div class="header-section">
+        <h1>📚 图书资产管理报表</h1>
+        <div class="update-badge">
+            <span style="margin-right: 6px;">🕒</span>
+            刷新于: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+            {f'<span style="margin-left:10px; color:#94a3b8;">| 最后检查: {last_checked_text}</span>' if last_checked_text else ''}
+        </div>
+    </div>
+    
+    <div class="summary-box">
+        <div class="card"><div class="card-label">累计购入金额</div><div class="card-val">¥{total_buy_amount:.2f}</div></div>
+        <div class="card"><div class="card-label">累计卖出金额</div><div class="card-val" style="color:#3b82f6">¥{total_sell_amount:.2f}</div></div>
+        <div class="card"><div class="card-label">当前持仓估值</div><div class="card-val" style="color:#3b82f6">¥{total_valuation_purchased:.2f}</div></div>
+        <div class="card">
+            <div class="card-label">持仓盈亏</div>
+            <div class="card-val {'val-p' if floating_profit>=0 else 'val-n'}">
+                {'+' if floating_profit>=0 else ''}{floating_profit:.2f}
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-label">已售实际盈亏</div>
+            <div class="card-val {'val-p' if sold_realized_profit>=0 else 'val-n'}">
+                {'+' if sold_realized_profit>=0 else ''}{sold_realized_profit:.2f}
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-label">实际盈亏（含赠送 / 丢弃）</div>
+            <div class="card-val {'val-p' if total_realized_profit>=0 else 'val-n'}">
+                {'+' if total_realized_profit>=0 else ''}{total_realized_profit:.2f}
+            </div>
+        </div>
+    </div>
+
+    <details class="details-card">
+        <summary>
+            <span>📦 购入 / 处置统计（6 项）</span>
+            <span class="details-hint">查看累计购入、当前持有、已售出、已赠送、已丢弃等数量</span>
+        </summary>
+        <div class="details-body">
+            <div class="summary-box" style="margin: 18px 0 0;">
+                <div class="card"><div class="card-label">累计购入</div><div class="card-val">{len(ever_purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">当前持有</div><div class="card-val">{len(purchased_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已售出</div><div class="card-val">{len(sold_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已赠送</div><div class="card-val">{len(gifted_rows)} 本</div></div>
+                <div class="card"><div class="card-label">已丢弃</div><div class="card-val">{len(discarded_rows)} 本</div></div>
+                <div class="card"><div class="card-label">观察中</div><div class="card-val">{len(observing_rows)} 本</div></div>
+            </div>
+            <p class="details-note">说明：累计购入按“购入价格已填写”统计；已赠送和已丢弃都不计卖出收入，但会保留购入成本并计入已实现损失。“已移除”仅用于内部识别上游不再返回的观察记录，不再作为业务统计项展示。</p>
+        </div>
+    </details>
+
+    <div id="chart-container"></div>
+
+    <details class="details-card">
+        <summary>
+            <span>🛎️ 持有待处理（{len(processing_rows)} 本）</span>
+            <span class="details-hint">当前持有且已标注待售 / 已看的书</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table id="processing-table">
+                    <thead>
+                        <tr>{processing_table_headers}</tr>
+                    </thead>
+                    <tbody>{processing_rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <details class="details-card" open>
+        <summary>
+            <span>📚 当前库存（{len(purchased_rows)} 本）</span>
+            <span class="details-hint">当前持有的全部书籍，可收起以查看下方板块</span>
+        </summary>
+        <div class="details-body">
+            <div class="section-header" style="margin-top:18px;">
+                <span></span>
+                <input type="text" id="search" class="search-box" placeholder="搜索书名、ISBN..." onkeyup="filterTable()">
+            </div>
+            <div class="table-wrapper">
+                <table id="inventory-table">
+                    <thead>
+                        <tr>{inventory_table_headers}</tr>
+                    </thead>
+                    <tbody>{inventory_rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <details class="details-card">
+        <summary>
+            <span>👀 观察清单（{len(observing_panel_rows)} 本）</span>
+            <span class="details-hint">未持有、仅观察行情的书籍</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table id="observing-table">
+                    <thead>
+                        <tr>{observing_table_headers}</tr>
+                    </thead>
+                    <tbody>{observing_rows_html}</tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+
+    <details class="details-card">
+        <summary>
+            <span>✅ 已售结项（{len(sold_rows)} 本）</span>
+            <span class="details-hint">查看已卖出书籍与已实现结果</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>售出价格</th><th>售出时间</th><th>净利润</th>
+                            {"".join([f"<th class='{'col-status' if ch in {'状态', '处理标签'} else ('col-note' if ch == '备注' else '')}'>{ch}</th>" for ch in report_tail_headers])}
+                        </tr>
+                    </thead>
+                    <tbody>"""
+
+    for r in sold_rows:
+        raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+        profit = "-"
+        if r['购入价格'] and r['售出价格']:
+            try:
+                p = float(r['售出价格']) - float(r['购入价格'])
+                profit = f"<span class='{'profit-p' if p>=0 else 'profit-n'}'>{'+' if p>=0 else ''}{p:.2f}</span>"
+            except (ValueError, TypeError):
+                pass
+        record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+        title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+        html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
+        html += f"<td>¥{r['购入价格']}</td><td>¥{r['售出价格']}</td><td>{r.get(SOLD_AT_FIELD, '-') or '-'}</td><td>{profit}</td>"
+        for ch in report_tail_headers:
+            html += _render_report_tail_cell(ch, r.get(ch, '-'))
+        html += "</tr>"
+
+    html += "</tbody></table></div></div></details>"
+
+    def _build_disposal_section(title, hint, section_rows, outcome_text):
+        colspan = 5 + len(report_tail_headers)
+        section_html = f"""
+    <details class="details-card">
+        <summary>
+            <span>{title}（{len(section_rows)} 本）</span>
+            <span class="details-hint">{hint}</span>
+        </summary>
+        <div class="details-body">
+            <div class="table-wrapper" style="margin-top:18px;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ISBN</th><th class="title-col">书名</th><th>购入价格</th><th>处理结果</th><th>已实现损益</th>
+                            {"".join([f"<th class='{'col-status' if ch in {'状态', '处理标签'} else ('col-note' if ch == '备注' else '')}'>{ch}</th>" for ch in report_tail_headers])}
+                        </tr>
+                    </thead>
+                    <tbody>"""
+        if not section_rows:
+            section_html += f"<tr><td colspan='{colspan}' class='empty-hint'>暂无{outcome_text}书籍。</td></tr>"
+        for r in section_rows:
+            raw_isbn = r['ISBN'][1:] if r['ISBN'].startswith("'") else r['ISBN']
+            loss = "-"
+            if r.get('购入价格'):
+                try:
+                    value = -float(r.get('购入价格') or 0)
+                    loss = f"<span class='profit-n'>{value:.2f}</span>"
+                except (ValueError, TypeError):
+                    pass
+            record_id = (r.get(RECORD_ID_FIELD) or '').strip()
+            title_link = f"<a class='book-link' href='book_detail.html?rid={quote(record_id)}&isbn={quote(raw_isbn)}&title={quote(r['书名'])}' target='_blank' rel='noopener noreferrer'>{html_lib.escape(r['书名'])}</a>"
+            section_html += f"<tr><td style='font-family:monospace'>{raw_isbn}</td><td class='title-col'>{title_link}</td>"
+            section_html += f"<td>{('¥' + r.get('购入价格', '')) if r.get('购入价格') else '-'}</td><td>{outcome_text}</td><td>{loss}</td>"
+            for ch in report_tail_headers:
+                section_html += _render_report_tail_cell(ch, r.get(ch, '-'))
+            section_html += "</tr>"
+        section_html += "</tbody></table></div></div></details>"
+        return section_html
+
+    html += _build_disposal_section(
+        "🎁 已赠送结项",
+        "已送出，不算卖出收入，但保留购入成本并计入已实现损失",
+        gifted_rows,
+        "已赠送",
+    )
+    html += _build_disposal_section(
+        "🗑️ 已丢弃结项",
+        "已损坏或废弃，不算卖出收入，但保留购入成本并计入已实现损失",
+        discarded_rows,
+        "已丢弃",
+    )
+
+    html += f"""
+    <script src="https://fastly.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <script>
+        // 1. 初始化趋势图
+        const trendData = {json.dumps(trend_data)};
+        const chart = echarts.init(document.getElementById('chart-container'));
+        chart.setOption({{
+            title: {{ text: '总浮动盈亏走势', left: 'center', textStyle: {{ fontSize: 14, color: '#64748b' }} }},
+            tooltip: {{ trigger: 'axis', formatter: '{{b}}: ¥{{c}}' }},
+            grid: {{ left: '3%', right: '4%', bottom: '3%', containLabel: true }},
+            xAxis: {{ type: 'category', data: trendData.map(d => d.date), axisLine: {{ lineStyle: {{ color: '#cbd5e1' }} }} }},
+            yAxis: {{ type: 'value', axisLabel: {{ formatter: '¥{{value}}' }}, splitLine: {{ lineStyle: {{ type: 'dashed' }} }} }},
+            series: [{{
+                data: trendData.map(d => d.value),
+                type: 'line', smooth: true, symbol: 'circle', symbolSize: 8,
+                itemStyle: {{ color: '#ef4444' }},
+                areaStyle: {{ color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                    {{ offset: 0, color: 'rgba(239,68,68,0.2)' }},
+                    {{ offset: 1, color: 'rgba(239,68,68,0)' }}
+                ]) }}
+            }}]
+        }});
+
+        // 2. 搜索过滤
+        function filterTable() {{
+            const query = document.getElementById('search').value.toLowerCase();
+            const rows = document.querySelectorAll('#inventory-table tbody tr');
+            rows.forEach(row => {{
+                row.style.display = row.innerText.toLowerCase().includes(query) ? '' : 'none';
+            }});
+        }}
+
+        // 3. 排序逻辑
+        let sortOrder = {{}};
+        function sortTable(tableId, colIdx, type) {{
+            const table = document.getElementById(tableId);
+            const ths = table.querySelectorAll('th');
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            const direction = sortOrder[colIdx] === 'asc' ? -1 : 1;
+            sortOrder[colIdx] = direction === 1 ? 'asc' : 'desc';
+
+            ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+            ths[colIdx].classList.add(direction === 1 ? 'sort-asc' : 'sort-desc');
+
+            rows.sort((a, b) => {{
+                let v1 = a.cells[colIdx].getAttribute('data-val') || a.cells[colIdx].innerText.replace('¥', '').replace('+', '').replace('↑', '').replace('↓', '').trim();
+                let v2 = b.cells[colIdx].getAttribute('data-val') || b.cells[colIdx].innerText.replace('¥', '').replace('+', '').replace('↑', '').replace('↓', '').trim();
+                
+                if (type === 'num') {{
+                    v1 = parseFloat(v1) || 0;
+                    v2 = parseFloat(v2) || 0;
+                    return (v1 - v2) * direction;
+                }}
+                return v1.localeCompare(v2) * direction;
+            }});
+
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+
+        window.onresize = () => chart.resize();
+    </script>
+</body>
+</html>"""
+
+    with open(report_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+
+# ==========================================
+# API 解析
+# ==========================================
+
+def process_raw_data(data):
+    """解析多抓鱼返回的原始 JSON"""
+    if 'data' not in data:
+        return None, None
+    books_data = {}
+    ordered_ids = []
+    for item in data['data']:
+        book_id = item.get('id')
+        book_info = item.get('book', {})
+        if book_id and book_info.get('title'):
+            ordered_ids.append(book_id)
+            title = book_info.get('title')
+            subtitle = (book_info.get('subtitle') or '').strip()
+            display_title = f"{title}（{subtitle}）" if subtitle else title
+            books_data[book_id] = {
+                'title': display_title,
+                'isbn': book_info.get('isbn13', ''),
+                'price': item.get('acquirePrice', 0) / 100.0,
+                'subsidy': item.get('popularBookSubsidy', 0) / 100.0,
+                'state_change': item.get('acquireStateChange')
+            }
+    return books_data, ordered_ids

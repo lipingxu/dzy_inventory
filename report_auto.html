@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DZY Inventory Template</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 32px; background: #f7f7fb; color: #1f2937; }
+    .card { max-width: 900px; margin: 0 auto; background: white; border-radius: 12px; padding: 28px; box-shadow: 0 8px 20px rgba(15,23,42,.05); }
+    h1 { margin-top: 0; }
+    .warning { background: #fff7ed; border-left: 5px solid #f59e0b; padding: 12px 16px; border-radius: 8px; color: #92400e; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #e5e7eb; padding: 10px 12px; text-align: left; }
+    th { background: #f3f4f6; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>图书资产管理系统（公开模板）</h1>
+    <div class="warning">
+      这是公开模板仓库，不保存真实图书数据。真实库存应保存在私有仓库中，例如 <code>dzy_data</code>。
+    </div>
+    <table>
+      <thead>
+        <tr><th>记录ID</th><th>ISBN</th><th>书名</th><th>状态</th><th>购入价格</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>sample-0001</td><td>9780000000001</td><td>示例书名 1</td><td>持有</td><td>20</td></tr>
+        <tr><td>sample-0002</td><td>9780000000002</td><td>示例书名 2</td><td>未持有</td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="muted">本仓库仅用于展示结构、脚本和模板流程，不含真实数据。</p>
+  </div>
+</body>
+</html>

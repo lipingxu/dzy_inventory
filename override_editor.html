@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>manual_overrides 本地编辑器</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; background: #f4f7f9; color: #334155; }
+    .page { max-width: 1600px; margin: 0 auto; padding: 24px; }
+    .hero, .panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .hero { padding: 20px 22px; margin-bottom: 18px; }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; color: #0f172a; }
+    .muted { color: #64748b; font-size: 0.95rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+    button { border: 0; border-radius: 10px; padding: 10px 14px; font-size: 0.95rem; font-weight: 600; cursor: pointer; }
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #e2e8f0; color: #0f172a; }
+    .success { background: #16a34a; color: #fff; }
+    .warning { background: #f59e0b; color: #fff; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    .status-bar { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+    .chip { padding: 8px 12px; border-radius: 999px; background: #f8fafc; border: 1px solid #e2e8f0; font-size: 0.88rem; }
+    .panel { padding: 18px; }
+    .panel-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .search { width: min(320px, 100%); padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 0.95rem; }
+    .category-card { border: 1px solid #e2e8f0; border-radius: 14px; margin-bottom: 14px; overflow: hidden; background: #fff; }
+    .category-card summary { list-style: none; cursor: pointer; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-weight: 700; color: #0f172a; background: #f8fafc; }
+    .category-card summary::-webkit-details-marker { display: none; }
+    .category-card summary::after { content: "展开"; color: #2563eb; font-size: 0.85rem; }
+    .category-card[open] summary::after { content: "收起"; }
+    .category-desc { font-size: 0.86rem; color: #64748b; font-weight: 500; }
+    .table-wrap { overflow: auto; border: 1px solid #e2e8f0; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; min-width: 980px; table-layout: fixed; }
+    th, td { border-bottom: 1px solid #f1f5f9; padding: 10px; text-align: left; vertical-align: top; }
+    th { position: sticky; top: 0; background: #f8fafc; color: #475569; z-index: 1; }
+    tr:nth-child(even) td { background: #fcfdff; }
+    input[type="text"], select { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #dbe3ee; border-radius: 8px; font-size: 0.92rem; background: #fff; }
+    input[readonly] { background: #f8fafc; color: #64748b; }
+    tr.row-modified td { background: #fffbeb !important; }
+    tr.row-modified td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+    tr.row-modified input, tr.row-modified select { border-color: #fbbf24; background: #fffef7; }
+    th.col-id, td.col-id { width: 130px; }
+    th.col-isbn, td.col-isbn { width: 170px; }
+    th.col-buy, td.col-buy, th.col-sell, td.col-sell { width: 100px; }
+    th.col-sold-at, td.col-sold-at { width: 120px; }
+    th.col-tag, td.col-tag { width: 110px; }
+    th.col-title, td.col-title { width: 320px; }
+    th.col-note, td.col-note { width: auto; }
+    .log { margin-top: 16px; padding: 12px 14px; background: #0f172a; color: #e2e8f0; border-radius: 12px; min-height: 72px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+    .note { margin-top: 10px; font-size: 0.9rem; color: #64748b; }
+    .pill-ok { color: #166534; border-color: #bbf7d0; background: #f0fdf4; }
+    .pill-warn { color: #92400e; border-color: #fde68a; background: #fffbeb; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <section class="hero">
+      <h1>📝 manual_overrides 本地编辑器</h1>
+      <div class="muted">在浏览器里编辑 override，保存到本地 CSV，并可选择提交推送后触发 GitHub Actions 重新同步。</div>
+      <div class="toolbar">
+        <button class="primary" id="saveBtn">保存到本地 CSV</button>
+        <button class="secondary" id="commitBtn">提交并推送 override</button>
+        <button class="warning" id="triggerBtn">触发 GitHub 同步</button>
+        <button class="success" id="saveSyncBtn">保存 → 推送 → 触发同步</button>
+      </div>
+      <div class="status-bar" id="statusBar"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <strong id="tableTitle">manual_overrides.csv</strong>
+        <input id="searchInput" class="search" type="text" placeholder="搜索书名、ISBN、备注、处理标签、赠送状态…">
+      </div>
+      <div id="categoryPanels"></div>
+      <div class="note">说明：日常只需改“处理标签”和价格，状态通常保持“自动判断”即可。状态与处理标签使用下拉选项可避免输入错误。浅黄色行表示本次打开后已编辑、尚未保存的内容；远端 GitHub Actions 只会读取已推送到 GitHub 的内容，如需立刻生效，请使用“保存 → 推送 → 触发同步”。</div>
+      <div id="log" class="log">准备就绪。</div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      headers: [],
+      rows: [],
+      config: {},
+      filterText: '',
+      originalRows: new Map(),
+    };
+
+    const statusOptions = ['', '持有', '未持有', '已售', '已赠送', '已丢弃', '已移除'];
+    const tagOptions = ['', '待售', '已看', '观察', '已售', '已赠送', '已丢弃'];
+
+    const logEl = document.getElementById('log');
+    const categoryPanels = document.getElementById('categoryPanels');
+    const tableTitle = document.getElementById('tableTitle');
+    const statusBar = document.getElementById('statusBar');
+    const searchInput = document.getElementById('searchInput');
+    const categories = [
+      { key: 'processing', title: '待售 / 已看', desc: '最常改的高频区：处理标签为“待售”或“已看”。', open: true },
+      { key: 'holding', title: '其他持有', desc: '已购入但尚未标记待售、已看、已赠送、已丢弃或已售。', open: true },
+      { key: 'observing', title: '观察', desc: '仅观察行情、未填写购入价的书。', open: false },
+      { key: 'gifted', title: '已赠送', desc: '已送给别人，不算卖出，但仍保留购入成本。', open: false },
+      { key: 'discarded', title: '已丢弃', desc: '已损坏/废弃，不算卖出，但需保留购入成本并计入损失。', open: false },
+      { key: 'sold', title: '已售出', desc: '已结案，低频查看区，默认收起。', open: false },
+    ];
+
+    function log(message) {
+      const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      logEl.textContent = `[${time}] ${message}\n` + logEl.textContent;
+    }
+
+    function normalizeHeaders(headers) {
+      return headers.filter(Boolean);
+    }
+
+    function renderStatusBar() {
+      const tokenChipClass = state.config.token_configured ? 'pill-ok' : 'pill-warn';
+      statusBar.innerHTML = `
+        <div class="chip">仓库：${state.config.owner || '-'} / ${state.config.repo || '-'}</div>
+        <div class="chip">分支：${state.config.branch || '-'}</div>
+        <div class="chip">工作流：${state.config.workflow_file || '-'}</div>
+        <div class="chip ${tokenChipClass}">GitHub Token：${state.config.token_configured ? '已配置' : '未配置'}</div>
+        <div class="chip">当前行数：${state.rows.length}</div>
+      `;
+    }
+
+    function classifyRow(row) {
+      const buyPrice = (row['购入价格'] || '').trim();
+      const sellPrice = (row['售出价格'] || '').trim();
+      const tag = (row['处理标签'] || '').trim();
+      const status = (row['状态'] || '').trim();
+      if (sellPrice || tag === '已售' || status === '已售') return 'sold';
+      if (tag === '已赠送' || status === '已赠送') return 'gifted';
+      if (tag === '已丢弃' || status === '已丢弃') return 'discarded';
+      if (tag === '待售' || tag === '已看') return 'processing';
+      if (!buyPrice) return 'observing';
+      return 'holding';
+    }
+
+    function buildTableHtml(headers, rows) {
+      const getColClass = (header) => {
+        if (header === '记录ID') return 'col-id';
+        if (header === 'ISBN') return 'col-isbn';
+        if (header === '购入价格') return 'col-buy';
+        if (header === '售出价格') return 'col-sell';
+        if (header === '售出时间') return 'col-sold-at';
+        if (header === '处理标签') return 'col-tag';
+        if (header === '书名') return 'col-title';
+        if (header === '备注') return 'col-note';
+        return '';
+      };
+
+      if (!rows.length) {
+        return `<div class="table-wrap"><table class="editor-table"><tbody><tr><td class="muted">暂无数据。</td></tr></tbody></table></div>`;
+      }
+
+      const selectHtml = (header, value) => {
+        const configuredOptions = header === '状态' ? statusOptions : tagOptions;
+        const options = configuredOptions.includes(value) ? configuredOptions : [value, ...configuredOptions];
+        const optionHtml = options.map(option => {
+          const label = option ? (configuredOptions.includes(option) ? option : `${option}（当前值）`) : '自动判断';
+          return `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${label}</option>`;
+        }).join('');
+        return `<select data-field="${header}">${optionHtml}</select>`;
+      };
+
+      return `
+        <div class="table-wrap">
+          <table class="editor-table">
+            <thead>
+              <tr>${headers.map(header => `<th class="${getColClass(header)}">${header}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${rows.map(({ row, actualIndex }) => {
+                const modifiedClass = isModifiedRow(row) ? 'row-modified' : '';
+                return `
+                  <tr class="${modifiedClass}" data-row-index="${actualIndex}">
+                    ${headers.map(header => {
+                      const rawValue = row[header] || '';
+                      const value = escapeHtml(rawValue);
+                      const isReadonly = header === '记录ID';
+                      const readonlyAttr = isReadonly ? 'readonly' : '';
+                      const titleAttr = isReadonly ? 'title="系统字段，请勿手动修改"' : '';
+                      const control = header === '状态' || header === '处理标签'
+                        ? selectHtml(header, rawValue)
+                        : `<input type="text" data-field="${header}" value="${value}" ${readonlyAttr} ${titleAttr}>`;
+                      return `<td class="${getColClass(header)}">${control}</td>`;
+                    }).join('')}
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    function renderTable() {
+      const headers = state.headers;
+      tableTitle.textContent = `manual_overrides.csv（${state.rows.length} 行）`;
+      const query = state.filterText.trim().toLowerCase();
+      const visibleRows = state.rows.filter(row => {
+        if (!query) return true;
+        return headers.some(header => (row[header] || '').toLowerCase().includes(query));
+      });
+      const grouped = Object.fromEntries(categories.map(category => [category.key, []]));
+      for (const row of visibleRows) {
+        const actualIndex = state.rows.indexOf(row);
+        grouped[classifyRow(row)].push({ row, actualIndex });
+      }
+      const totalGrouped = Object.fromEntries(categories.map(category => [category.key, 0]));
+      for (const row of state.rows) {
+        totalGrouped[classifyRow(row)] += 1;
+      }
+
+      categoryPanels.innerHTML = categories.map(category => `
+        <details class="category-card" ${category.open ? 'open' : ''}>
+          <summary>
+            <span>${category.title}（${grouped[category.key].length}/${totalGrouped[category.key]} 行）</span>
+            <span class="category-desc">${category.desc}</span>
+          </summary>
+          ${buildTableHtml(headers, grouped[category.key])}
+        </details>
+      `).join('');
+    }
+
+    function rowKey(row) {
+      return row['记录ID'] || row['ISBN'] || row['书名'] || '';
+    }
+
+    function isModifiedRow(row) {
+      const original = state.originalRows.get(rowKey(row));
+      return !original || state.headers.some(header => (row[header] || '') !== (original[header] || ''));
+    }
+
+    function escapeHtml(text) {
+      return text
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function collectRowsFromDom() {
+      const rows = [];
+      document.querySelectorAll('.editor-table tbody tr[data-row-index]').forEach((tr) => {
+        const rowIndex = Number(tr.dataset.rowIndex);
+        const row = { ...state.rows[rowIndex] };
+        tr.querySelectorAll('input[data-field], select[data-field]').forEach((control) => {
+          row[control.dataset.field] = control.value;
+        });
+        rows.push([rowIndex, row]);
+      });
+
+      for (const [rowIndex, row] of rows) {
+        state.rows[rowIndex] = row;
+      }
+      return state.rows;
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || '请求失败');
+      }
+      return data;
+    }
+
+    async function loadData() {
+      const data = await api('/api/data');
+      state.headers = normalizeHeaders(data.headers);
+      state.rows = data.rows || [];
+      state.originalRows = new Map(state.rows.map(row => [rowKey(row), { ...row }]));
+      state.config = data.config || {};
+      renderStatusBar();
+      renderTable();
+      log('已加载 manual_overrides.csv');
+    }
+
+    async function saveCsv() {
+      collectRowsFromDom();
+      const result = await api('/api/save', {
+        method: 'POST',
+        body: JSON.stringify({ headers: state.headers, rows: state.rows }),
+      });
+      log(result.message);
+      await loadData();
+    }
+
+    async function commitPush() {
+      const result = await api('/api/commit-push', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      log(result.commit ? `${result.message} 提交：${result.commit}` : result.message);
+    }
+
+    async function triggerSync() {
+      const result = await api('/api/trigger-sync', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      log(result.message);
+    }
+
+    async function savePublishSync() {
+      collectRowsFromDom();
+      const result = await api('/api/save-publish-sync', {
+        method: 'POST',
+        body: JSON.stringify({ headers: state.headers, rows: state.rows }),
+      });
+      log([result.message, ...(result.details || []), result.commit ? `提交：${result.commit}` : ''].filter(Boolean).join('\n'));
+      await loadData();
+    }
+
+    function setBusy(busy) {
+      document.querySelectorAll('button').forEach(btn => btn.disabled = busy);
+    }
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await saveCsv(); } catch (err) { log(`保存失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('commitBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await commitPush(); } catch (err) { log(`提交推送失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('triggerBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await triggerSync(); } catch (err) { log(`触发同步失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    document.getElementById('saveSyncBtn').addEventListener('click', async () => {
+      setBusy(true);
+      try { await savePublishSync(); } catch (err) { log(`保存并同步失败：${err.message}`); } finally { setBusy(false); }
+    });
+
+    searchInput.addEventListener('input', (event) => {
+      collectRowsFromDom();
+      state.filterText = event.target.value || '';
+      renderTable();
+    });
+
+    categoryPanels.addEventListener('input', (event) => {
+      if (!event.target.matches('input[data-field], select[data-field]')) return;
+      const tr = event.target.closest('tr[data-row-index]');
+      const row = { ...state.rows[Number(tr.dataset.rowIndex)] };
+      tr.querySelectorAll('[data-field]').forEach(control => {
+        row[control.dataset.field] = control.value;
+      });
+      tr.classList.toggle('row-modified', isModifiedRow(row));
+    });
+
+    loadData().catch(err => {
+      log(`初始化失败：${err.message}`);
+    });
+  </script>
+</body>
+</html>

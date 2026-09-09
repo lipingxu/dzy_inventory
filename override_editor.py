@@ -11,8 +11,12 @@ manual_overrides.csv 本地编辑器
 启动：
   python3 override_editor.py
 
+认证：
+  默认使用 `gh auth login` 保存的 GitHub CLI 登录凭据触发 GitHub Actions。
+  若未登录 GitHub CLI，也可设置 GITHUB_TOKEN / GH_TOKEN。
+
 可选环境变量：
-  GITHUB_TOKEN / GH_TOKEN        触发 GitHub Actions 所需令牌
+  GITHUB_TOKEN / GH_TOKEN        GitHub CLI 不可用时的令牌回退
   GITHUB_WORKFLOW_FILE           默认 scheduled-price-sync.yml
   GITHUB_REF                     默认当前分支，回退 main
 """
@@ -142,9 +146,27 @@ def _get_origin_repo() -> tuple[str, str]:
     return parts[0], parts[1]
 
 
+def _get_github_token() -> str:
+    """Read the current GitHub CLI token without exposing it to the editor UI."""
+    environment = os.environ.copy()
+    environment.pop("GITHUB_TOKEN", None)
+    environment.pop("GH_TOKEN", None)
+    result = subprocess.run(
+        ["gh", "auth", "token"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip()
+
+    return os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+
+
 def _get_editor_config() -> dict:
     owner, repo = _get_origin_repo()
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
+    token = _get_github_token()
     workflow_file = os.environ.get("GITHUB_WORKFLOW_FILE", DEFAULT_WORKFLOW_FILE)
     branch = os.environ.get("GITHUB_REF", _get_branch_name())
     return {
@@ -198,9 +220,9 @@ def _commit_and_push_manual(commit_message: str) -> dict:
 
 def _trigger_github_workflow() -> dict:
     config = _get_editor_config()
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    token = _get_github_token()
     if not token:
-        raise RuntimeError("未配置 GITHUB_TOKEN/GH_TOKEN，无法触发 GitHub Actions")
+        raise RuntimeError("未找到 GitHub CLI 登录或 GITHUB_TOKEN/GH_TOKEN，无法触发 GitHub Actions")
 
     url = (
         f"https://api.github.com/repos/{config['owner']}/{config['repo']}"

@@ -1,64 +1,123 @@
-# 图书资产管理系统（公开模板版）
+# 图书资产管理系统（公开模板）
 
-## 说明
+这是一个**公开模板仓库**，用于展示图书库存同步与报表流程。  
+请不要在本仓库存放真实书单、价格、备注、Cookie 或 Token。
 
-这是一个公开模板仓库，用于展示图书资产管理系统的结构、脚本、同步流程和报表格式。
+## 1) 推荐使用方式（新用户）
 
-本仓库不保存真实图书数据。真实数据应保留在私有仓库：
+建议使用双仓库：
 
-- `lipingxu/dzy_data`
+- **公开仓库**：放这份模板代码（可分享）
+- **私有仓库**：放你的真实数据与自动同步（不可公开）
 
-这样可以避免在公开仓库中暴露个人书单、购入价格、售出记录、备注和私有访问信息。
+这样可以避免泄露个人书单和交易信息。
 
-## 结构说明
+## 2) 目录说明
 
-- `inventory_core.py`：核心逻辑，负责 CSV 合并、状态重算、历史记录和报表生成
-- `auto_sync_data.py`：同步入口脚本，用于处理抓取结果并更新主数据
-- `manual_overrides.csv`：手工覆盖文件，保留你自己的购入价、售出价、状态和备注
-- `price_history.csv`：历史价格日记
-- `report_auto.html`：主报表页面
-- `book_detail.html`：书籍详情页
-- `.github/workflows/scheduled-price-sync.yml`：GitHub Actions 自动同步工作流
-- `backups/`：同步前备份目录
+- `auto_sync_data.py`：同步入口（支持 JSON 文件 / curl 文本 / 剪贴板）
+- `inventory_core.py`：主逻辑（主表更新、manual 合并、报表生成、历史价格）
+- `manual_overrides.csv`：人工维护字段（购入/售出/备注等）
+- `price_history.csv`：价格历史
+- `report_auto.html`：总览报表
+- `book_detail.html`：单书详情页
+- `override_editor.py` + `override_editor.html`：本地 manual 编辑器
+- `.github/workflows/scheduled-price-sync.yml`：GitHub Actions 手动触发工作流
 
-## 生产环境推荐架构
+## 3) 快速开始
 
-推荐使用双仓库模型：
+### 3.1 环境准备
 
-1. 私有仓库：保存真实数据，进行自动同步与部署
-2. 公开仓库：保留示例/模板代码，供共享、展示和复用
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip playwright
+python -m playwright install chromium
+```
 
-## 自动同步方式
+### 3.2 清理示例数据（首次使用）
 
-当前生产环境仍使用以下链路：
+把 `inventory_auto.csv`、`manual_overrides.csv`、`price_history.csv` 清空为仅保留表头，再开始你的私有数据同步。
 
-- 外部 cronjob 触发 GitHub Actions
-- GitHub Actions 读取 `DZY_CURL_COMMAND`
-- 拉取多抓鱼数据并更新 CSV / HTML
-- 将内容提交到私有仓库
-- 使用 Cloudflare Pages 进行私有页面部署
-- Cloudflare Access 限制访问权限
+## 4) 三种同步入口
 
-## 私有化部署注意事项
+### A. 用已抓取的 JSON 文件同步
 
-如果你想在真实环境中使用，请在私有仓库中配置：
+```bash
+python3 auto_sync_data.py latest_data.json
+```
 
-- `DZY_CURL_COMMAND`
-- GitHub Actions 运行权限
-- Cloudflare Pages 项目
-- Cloudflare Access 允许邮箱列表
+### B. 用 curl 文本同步（文件里是完整 curl 命令）
 
-## 模板使用建议
+```bash
+python3 auto_sync_data.py duozhuayu_source.txt
+```
 
-如果你是从这个公开模板复制出来使用：
+### C. 从剪贴板同步（不带参数）
 
-- 先清空 `inventory_auto.csv` 和 `manual_overrides.csv`
-- 保留表头即可
-- 在自己的私有仓库里配置真实的抓取命令和访问权限
-- 运行同步后再开始维护自己的书单
+```bash
+python3 auto_sync_data.py
+```
 
-## 免责声明
+> 若剪贴板不是有效 JSON/curl，会报“格式错误”，这是预期行为。
 
-这个仓库仅用于代码示例和模板复用，不能直接替代真实的私有数据仓库。
+## 5) manual 与总表的同步规则
 
-若要部署真实的书单系统，请使用 `dzy_data` 私有仓库作为数据源，并保持公开模板仓库无真实数据。
+系统会先更新主表，再同步 `manual_overrides.csv`：
+
+- 新书会自动补进 manual
+- `记录ID` / `ISBN` / `书名` 会自动对齐
+- 人工字段（如购入价、售出价、备注）保留为你填写的值
+- manual 中保留的历史购入记录，即使上游列表消失，也会继续保留并合并回主表
+
+## 6) 本地编辑器（改 manual 最方便）
+
+启动：
+
+```bash
+python3 override_editor.py
+```
+
+默认地址：`http://127.0.0.1:8765`
+
+可选参数：
+
+```bash
+python3 override_editor.py --host 127.0.0.1 --port 8765 --no-browser
+```
+
+编辑器支持：
+
+- 保存到本地 CSV
+- 提交并推送 `manual_overrides.csv`
+- 触发 GitHub Actions 同步
+- 一键“保存 → 推送 → 触发同步”
+
+## 7) GitHub Actions 与定时触发说明
+
+仓库内工作流目前只有 `workflow_dispatch`（手动触发），没有内置 `schedule`。  
+如果你要自动每 4 小时运行，请在外部 cron 系统调用 GitHub API 触发该工作流。
+
+工作流依赖 Secret：
+
+- `DZY_CURL_COMMAND`：完整 curl 命令（高敏感，必须只放在私有仓库）
+
+工作流需要 `contents: write` 才能提交更新后的 CSV/HTML。
+
+## 8) Token 与凭据区别
+
+- **git push 凭据**：用于本地 `git push`
+- **`GITHUB_TOKEN` / `GH_TOKEN` 环境变量**：仅用于本地编辑器触发 GitHub Actions API
+
+请不要把长期有效 token 明文写进公开仓库文件。
+
+## 9) 常见问题
+
+- 浏览器未自动打开：手动访问 `http://127.0.0.1:8765`
+- 同步失败：检查 `DZY_CURL_COMMAND` 是否有效、是否过期
+- Actions 未提交：检查仓库权限是否允许写入，以及分支保护策略
+
+## 10) 安全建议
+
+- 真实数据只放私有仓库
+- 公开仓库只保留模板与示例
+- 不要公开部署包含真实书单的页面

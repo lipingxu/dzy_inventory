@@ -264,10 +264,17 @@ permissions:
 ```bash
 git add manual_overrides.csv
 git commit -m "chore: update manual overrides"
-git push
+git pull --rebase origin main
+git push origin main
 ```
 
 然后你也可以在 GitHub 上手动触发同步工作流，重新生成总表和报表。
+
+如果使用 `override_editor.py`，建议点击“保存 → 推送 → 触发同步”。编辑器会先确认本地和远端已经同步，再触发 GitHub Actions，避免工作流读取旧版 `manual_overrides.csv`。
+
+`git pull --rebase` 的作用是：当远端已经有新的自动同步提交时，把你本地尚未推送的 manual 修改重新接到远端最新提交之后，保持历史线性，减少无意义 merge commit。
+
+PR（Pull Request）适合修改同步脚本、报表逻辑、GitHub Actions 等代码类变更；日常只改自己的书单状态、购入价和备注时，通常直接推送到私有数据仓库的 `main` 更简单。
 
 ## 7. GitHub 手动模式的适用建议
 

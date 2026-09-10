@@ -211,6 +211,46 @@ def _ensure_synced_with_origin(branch: str) -> None:
         )
 
 
+def _get_unpushed_paths(branch: str) -> list[str]:
+    result = _run_git(["diff", "--name-only", f"origin/{branch}..HEAD"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "读取未推送文件失败")
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _push_pending_manual_commits(branch: str) -> dict | None:
+    _fetch_origin(branch)
+    ahead, behind = _get_ahead_behind(branch)
+    if ahead == 0:
+        if behind:
+            raise RuntimeError(
+                f"manual_overrides.csv 没有新的可提交变更，但远端 origin/{branch} 有 {behind} 个新提交。"
+                "请先拉取远端更新后刷新页面。"
+            )
+        return None
+
+    unpushed_paths = _get_unpushed_paths(branch)
+    unexpected = [path for path in unpushed_paths if path != "manual_overrides.csv"]
+    if unexpected:
+        raise RuntimeError(
+            "存在非 manual_overrides.csv 的本地未推送提交，已停止自动推送："
+            f"{', '.join(unexpected)}"
+        )
+
+    if behind:
+        pull_result = _run_git(["pull", "--rebase", "origin", branch])
+        if pull_result.returncode != 0:
+            raise RuntimeError(pull_result.stderr.strip() or pull_result.stdout.strip() or "git pull --rebase 失败")
+
+    push_result = _run_git(["push", "origin", branch])
+    if push_result.returncode != 0:
+        raise RuntimeError(push_result.stderr.strip() or push_result.stdout.strip() or "git push 失败")
+
+    _ensure_synced_with_origin(branch)
+    commit_sha = _run_git(["rev-parse", "HEAD"]).stdout.strip()
+    return {"message": "manual_overrides.csv 没有新的可提交变更；已重试推送本地未推送的 override 提交。", "commit": commit_sha}
+
+
 def _commit_and_push_manual(commit_message: str) -> dict:
     add_result = _run_git(["add", "manual_overrides.csv"])
     if add_result.returncode != 0:
@@ -223,7 +263,8 @@ def _commit_and_push_manual(commit_message: str) -> dict:
 
     diff_result = _run_git(["diff", "--cached", "--quiet", "--", "manual_overrides.csv"])
     if diff_result.returncode == 0:
-        return {"message": "manual_overrides.csv 没有新的可提交变更。"}
+        retry_result = _push_pending_manual_commits(_get_branch_name())
+        return retry_result or {"message": "manual_overrides.csv 没有新的可提交变更，且没有本地未推送提交。"}
     if diff_result.returncode not in (0, 1):
         raise RuntimeError(diff_result.stderr.strip() or "检查缓存差异失败")
 

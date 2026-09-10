@@ -185,6 +185,32 @@ def _get_staged_paths() -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def _fetch_origin(branch: str) -> None:
+    fetch_result = _run_git(["fetch", "origin", branch])
+    if fetch_result.returncode != 0:
+        raise RuntimeError(fetch_result.stderr.strip() or fetch_result.stdout.strip() or "git fetch 失败")
+
+
+def _get_ahead_behind(branch: str) -> tuple[int, int]:
+    result = _run_git(["rev-list", "--left-right", "--count", f"HEAD...origin/{branch}"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "读取本地/远端同步状态失败")
+    parts = result.stdout.strip().split()
+    if len(parts) != 2:
+        raise RuntimeError(f"无法解析本地/远端同步状态: {result.stdout.strip()}")
+    return int(parts[0]), int(parts[1])
+
+
+def _ensure_synced_with_origin(branch: str) -> None:
+    _fetch_origin(branch)
+    ahead, behind = _get_ahead_behind(branch)
+    if ahead or behind:
+        raise RuntimeError(
+            f"本地 {branch} 与 origin/{branch} 未同步（ahead {ahead}, behind {behind}）。"
+            "请先确认提交已成功推送，并处理远端新增提交后再触发 GitHub Actions。"
+        )
+
+
 def _commit_and_push_manual(commit_message: str) -> dict:
     add_result = _run_git(["add", "manual_overrides.csv"])
     if add_result.returncode != 0:
@@ -210,16 +236,18 @@ def _commit_and_push_manual(commit_message: str) -> dict:
     if pull_result.returncode != 0:
         raise RuntimeError(pull_result.stderr.strip() or pull_result.stdout.strip() or "git pull --rebase 失败")
 
-    push_result = _run_git(["push"])
+    push_result = _run_git(["push", "origin", branch])
     if push_result.returncode != 0:
         raise RuntimeError(push_result.stderr.strip() or push_result.stdout.strip() or "git push 失败")
 
+    _ensure_synced_with_origin(branch)
     commit_sha = _run_git(["rev-parse", "HEAD"]).stdout.strip()
-    return {"message": "已提交并推送 manual_overrides.csv。", "commit": commit_sha}
+    return {"message": "已提交并推送 manual_overrides.csv，且本地/远端已同步。", "commit": commit_sha}
 
 
 def _trigger_github_workflow() -> dict:
     config = _get_editor_config()
+    _ensure_synced_with_origin(config["branch"])
     token = _get_github_token()
     if not token:
         raise RuntimeError("未找到 GitHub CLI 登录或 GITHUB_TOKEN/GH_TOKEN，无法触发 GitHub Actions")
